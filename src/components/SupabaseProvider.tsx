@@ -13,6 +13,7 @@ import { supabase } from "../utils/supabase.ts";
 import {
   ensureUserProfile,
   getLocalAvatar,
+  getLocalBanner,
   getLocalPilotDetails,
   subscribePublicAirfoils,
   subscribePublicBenchmarks,
@@ -29,6 +30,7 @@ export interface AppUser {
   email: string;
   displayName: string;
   photoURL: string;
+  bannerURL: string;
   bio: string;
   role: string;
   organization: string;
@@ -41,6 +43,7 @@ function toAppUser(u: SupabaseAuthUser | null): AppUser | null {
   const meta = u.user_metadata || {};
   const localDetails = getLocalPilotDetails(u.id);
   const localAvatar = getLocalAvatar(u.id);
+  const localBanner = getLocalBanner(u.id);
   const avatarRemoved = meta.avatar_removed === true;
   const displayName = String(
     meta.full_name || meta.name || localDetails.displayName || u.email?.split("@")[0] || "AeroLab Pilot"
@@ -50,11 +53,13 @@ function toAppUser(u: SupabaseAuthUser | null): AppUser | null {
     : avatarRemoved
       ? ""
       : String(meta.avatar_url || meta.picture || "");
+  const bannerURL = localBanner || String(meta.banner_url || "");
   return {
     uid: u.id,
     email: u.email || "",
     displayName,
     photoURL,
+    bannerURL,
     bio: String(meta.bio ?? localDetails.bio ?? ""),
     role: String(meta.role ?? localDetails.role ?? ""),
     organization: String(meta.organization ?? localDetails.organization ?? ""),
@@ -71,6 +76,8 @@ export interface UpdateProfilePayload {
   location: string;
   avatarFile?: File | null;
   removeAvatar?: boolean;
+  bannerFile?: File | null;
+  removeBanner?: boolean;
 }
 
 interface SupabaseContextValue {
@@ -329,6 +336,7 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
             organization: saved.organization,
             location: saved.location,
             photoURL: saved.photoURL,
+            bannerURL: saved.bannerURL,
           }
         : prev
     );

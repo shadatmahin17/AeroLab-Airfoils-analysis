@@ -94,6 +94,13 @@ export default function BenchmarkComparison({
         ld: liveLd,
         separationPct: stats.separationPct,
         sourceLabel: "Live 2D LBM + NeuroFoil",
+        summaryExtra: {
+          regime: neuroEval.regime,
+          optimalAlpha: neurofoilPrediction.optimalAlpha,
+          stallAlpha: neurofoilPrediction.stallAlpha,
+          neurofoilPeakLd: neurofoilPrediction.maxLd,
+          agreementPct: neuroEval.agreementPct,
+        },
       });
       if (user) {
         const myRunsCount = benchmarks.filter((b) => b.recorderUid === user.uid).length + 1;
@@ -103,7 +110,11 @@ export default function BenchmarkComparison({
           bestAirfoil: saved.airfoilName,
         }).catch(() => {});
       }
-      setStatusMsg(`Saved ${saved.airfoilName} (L/D ${saved.ld.toFixed(2)}) to Best Benchmarks.`);
+      setStatusMsg(
+        saved.storageWarning
+          ? `Saved ${saved.airfoilName} (L/D ${saved.ld.toFixed(2)}) to DB (Bucket: ${saved.storageWarning}).`
+          : `Saved ${saved.airfoilName} (L/D ${saved.ld.toFixed(2)}) to Database & Storage Bucket.`
+      );
     } catch (e) {
       setErrMsg(e instanceof Error ? e.message : "Could not publish benchmark.");
     } finally {
@@ -127,10 +138,10 @@ export default function BenchmarkComparison({
     }
   };
 
-  const handleDeleteBenchmark = async (id: string) => {
+  const handleDeleteBenchmark = async (item: BenchmarkRunDoc) => {
     setErrMsg(null);
     try {
-      await deleteBenchmarkRun(id);
+      await deleteBenchmarkRun(item.id, item.recorderUid);
     } catch (e) {
       setErrMsg(e instanceof Error ? e.message : "Could not delete benchmark.");
     }
@@ -338,7 +349,7 @@ export default function BenchmarkComparison({
         className="btn btn-primary-accent btn-sm w-full whitespace-nowrap"
       >
         <UploadCloud size={14} aria-hidden="true" />
-        <span>{saving ? "Publishing Result…" : "Save Result to Leaderboard"}</span>
+        <span>{saving ? "Saving Summary…" : "Save Result Summary"}</span>
       </button>
 
       {statusMsg && (
@@ -374,7 +385,7 @@ export default function BenchmarkComparison({
                     {canDelete && (
                       <button
                         type="button"
-                        onClick={() => handleDeleteBenchmark(b.id)}
+                        onClick={() => handleDeleteBenchmark(b)}
                         aria-label={`Delete benchmark ${b.airfoilName}`}
                         className="text-[#5C6670] hover:text-red-600 cursor-pointer"
                       >

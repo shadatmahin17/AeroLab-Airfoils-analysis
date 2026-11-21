@@ -14,6 +14,10 @@ export interface UserProfileDoc {
   updatedAtMs: number;
 }
 
+export const AIRFOILS_BUCKET = "airfoils";
+export const AVATARS_BUCKET = "avatars";
+export const RESULTS_BUCKET = "results";
+
 export interface PilotDetails {
   displayName: string;
   bio: string;
@@ -21,6 +25,8 @@ export interface PilotDetails {
   organization: string;
   location: string;
   photoURL: string;
+  bannerURL: string;
+  storageWarning?: string;
 }
 
 export interface SharedAirfoilDoc {
@@ -36,6 +42,9 @@ export interface SharedAirfoilDoc {
   isNeutralRef: boolean;
   visibility: "public";
   createdAtMs: number;
+  storagePath: string;
+  storageUrl: string;
+  storageWarning?: string;
 }
 
 export interface BenchmarkRunDoc {
@@ -53,6 +62,9 @@ export interface BenchmarkRunDoc {
   recorderUid: string;
   visibility: "public";
   createdAtMs: number;
+  storagePath: string;
+  storageUrl: string;
+  storageWarning?: string;
 }
 
 export interface NeutralReferenceData {
@@ -69,6 +81,46 @@ export interface NeutralReferenceData {
 }
 
 export const SUPABASE_SYNC_EVENT = "aerolab:supabase-sync";
+
+function getBucketPublicUrl(bucket: string, objectPath: string): string {
+  if (!supabase || !objectPath) return "";
+  const { data } = supabase.storage.from(bucket).getPublicUrl(objectPath);
+  return data?.publicUrl || "";
+}
+
+async function uploadBlobToBucket(
+  bucket: string,
+  objectPath: string,
+  blob: Blob,
+  contentType: string
+): Promise<{ ok: true; publicUrl: string } | { ok: false; error: string }> {
+  const client = requireSupabase();
+  try {
+    const { error } = await client.storage.from(bucket).upload(objectPath, blob, {
+      upsert: true,
+      contentType,
+    });
+    if (error) {
+      return { ok: false, error: error.message || `Bucket "${bucket}" upload failed.` };
+    }
+    const { data } = client.storage.from(bucket).getPublicUrl(objectPath);
+    return { ok: true, publicUrl: data?.publicUrl || "" };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : `Bucket "${bucket}" upload failed.`,
+    };
+  }
+}
+
+async function removeObjectsFromBucket(bucket: string, objectPaths: string[]): Promise<void> {
+  if (!supabase || !objectPaths.length) return;
+  try {
+    await supabase.storage.from(bucket).remove(objectPaths);
+  } catch {
+    // ignore storage cleanup errors
+  }
+}
 
 function requireSupabase() {
   if (!supabase) {
@@ -180,8 +232,11 @@ function mapUserProfile(row: Record<string, unknown>, fallbackUid: string): User
 }
 
 function mapAirfoilRow(row: Record<string, unknown>): SharedAirfoilDoc {
+  const id = String(row.id || "");
+  const uploaderUid = String(row.uploader_uid || "");
+  const storagePath = id ? `${uploaderUid || "community"}/${id}.dat` : "";
   return {
-    id: String(row.id || ""),
+    id,
     name: String(row.name || "Untitled"),
     filename: String(row.filename || "airfoil.dat"),
     coordsText: String(row.coords_text || ""),
@@ -189,16 +244,21 @@ function mapAirfoilRow(row: Record<string, unknown>): SharedAirfoilDoc {
     camberPct: Number(row.camber_pct || 0),
     thicknessPct: Number(row.thickness_pct || 12),
     uploaderName: String(row.uploader_name || "Community"),
-    uploaderUid: String(row.uploader_uid || ""),
+    uploaderUid,
     isNeutralRef: Boolean(row.is_neutral_ref),
     visibility: "public" as const,
     createdAtMs: toMillis(row.created_at),
+    storagePath,
+    storageUrl: getBucketPublicUrl(AIRFOILS_BUCKET, storagePath),
   };
 }
 
 function mapBenchmarkRow(row: Record<string, unknown>): BenchmarkRunDoc {
+  const id = String(row.id || "");
+  const recorderUid = String(row.recorder_uid || "");
+  const storagePath = id ? `${recorderUid || "community"}/${id}.json` : "";
   return {
-    id: String(row.id || ""),
+    id,
     airfoilName: String(row.airfoil_name || "Unknown"),
     airfoilId: String(row.airfoil_id || ""),
     kind: (row.kind === "neutral_ref" ? "neutral_ref" : "best_run") as "best_run" | "neutral_ref",
@@ -209,9 +269,11 @@ function mapBenchmarkRow(row: Record<string, unknown>): BenchmarkRunDoc {
     ld: Number(row.ld || 0),
     separationPct: Number(row.separation_pct || 0),
     sourceLabel: String(row.source_label || "2D LBM Solver"),
-    recorderUid: String(row.recorder_uid || ""),
+    recorderUid,
     visibility: "public" as const,
     createdAtMs: toMillis(row.created_at),
+    storagePath,
+    storageUrl: getBucketPublicUrl(RESULTS_BUCKET, storagePath),
   };
 }
 
@@ -355,6 +417,7 @@ export async function ensureUserProfile(statsHint?: {
 }
 
 const LOCAL_AVATAR_KEY_PREFIX = "aerolab:avatar:";
+const LOCAL_BANNER_KEY_PREFIX = "aerolab:banner:";
 const LOCAL_DETAILS_KEY_PREFIX = "aerolab:pilot-details:";
 
 export function getLocalAvatar(uid: string): string {
@@ -370,6 +433,29 @@ export function saveLocalAvatar(uid: string, dataUrl: string | null): void {
   if (typeof window === "undefined" || !uid) return;
   try {
     const key = `${LOCAL_AVATAR_KEY_PREFIX}${uid}`;
+    if (dataUrl) {
+      window.localStorage.setItem(key, dataUrl);
+    } else {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // ignore storage quota failures
+  }
+}
+
+export function getLocalBanner(uid: string): string {
+  if (typeof window === "undefined" || !uid) return "";
+  try {
+    return window.localStorage.getItem(`${LOCAL_BANNER_KEY_PREFIX}${uid}`) || "";
+  } catch {
+    return "";
+  }
+}
+
+export function saveLocalBanner(uid: string, dataUrl: string | null): void {
+  if (typeof window === "undefined" || !uid) return;
+  try {
+    const key = `${LOCAL_BANNER_KEY_PREFIX}${uid}`;
     if (dataUrl) {
       window.localStorage.setItem(key, dataUrl);
     } else {
@@ -401,7 +487,12 @@ export function saveLocalPilotDetails(uid: string, details: Partial<PilotDetails
   }
 }
 
-export async function processAvatarImage(file: File): Promise<{ dataUrl: string; blob: Blob }> {
+async function processCroppedImage(
+  file: File,
+  targetWidth: number,
+  targetHeight: number,
+  quality = 0.86
+): Promise<{ dataUrl: string; blob: Blob }> {
   if (!file.type.startsWith("image/")) {
     throw new Error("Please select an image file (PNG, JPG, or WebP).");
   }
@@ -418,27 +509,40 @@ export async function processAvatarImage(file: File): Promise<{ dataUrl: string;
       el.src = objectUrl;
     });
 
-    const size = 256;
+    const natW = img.naturalWidth || img.width;
+    const natH = img.naturalHeight || img.height;
+    const targetAspect = targetWidth / targetHeight;
+    const srcAspect = natW / natH;
+
+    let sx = 0;
+    let sy = 0;
+    let sw = natW;
+    let sh = natH;
+    if (srcAspect > targetAspect) {
+      sw = natH * targetAspect;
+      sx = (natW - sw) / 2;
+    } else {
+      sh = natW / targetAspect;
+      sy = (natH - sh) / 2;
+    }
+
     const canvas = document.createElement("canvas");
-    canvas.width = size;
-    canvas.height = size;
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
     const ctx = canvas.getContext("2d");
     if (!ctx) {
       throw new Error("Canvas image processing is unavailable in this browser.");
     }
 
-    const srcMin = Math.min(img.naturalWidth || img.width, img.naturalHeight || img.height);
-    const sx = ((img.naturalWidth || img.width) - srcMin) / 2;
-    const sy = ((img.naturalHeight || img.height) - srcMin) / 2;
-    ctx.drawImage(img, sx, sy, srcMin, srcMin, 0, 0, size, size);
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, targetWidth, targetHeight);
 
     const mime = "image/jpeg";
-    const dataUrl = canvas.toDataURL(mime, 0.86);
+    const dataUrl = canvas.toDataURL(mime, quality);
     const blob = await new Promise<Blob>((resolve, reject) => {
       canvas.toBlob(
-        (b) => (b ? resolve(b) : reject(new Error("Could not encode avatar image."))),
+        (b) => (b ? resolve(b) : reject(new Error("Could not encode image."))),
         mime,
-        0.86
+        quality
       );
     });
 
@@ -446,6 +550,14 @@ export async function processAvatarImage(file: File): Promise<{ dataUrl: string;
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
+}
+
+export async function processAvatarImage(file: File): Promise<{ dataUrl: string; blob: Blob }> {
+  return processCroppedImage(file, 256, 256, 0.86);
+}
+
+export async function processBannerImage(file: File): Promise<{ dataUrl: string; blob: Blob }> {
+  return processCroppedImage(file, 1200, 320, 0.85);
 }
 
 export async function updatePilotProfile(input: {
@@ -456,6 +568,8 @@ export async function updatePilotProfile(input: {
   location: string;
   avatarFile?: File | null;
   removeAvatar?: boolean;
+  bannerFile?: File | null;
+  removeBanner?: boolean;
 }): Promise<PilotDetails> {
   const client = requireSupabase();
   const {
@@ -476,6 +590,9 @@ export async function updatePilotProfile(input: {
 
   let nextPhotoUrl: string | undefined;
   let nextLocalPhoto: string | undefined;
+  let nextBannerUrl: string | undefined;
+  let nextLocalBanner: string | undefined;
+  const warnings: string[] = [];
 
   if (input.removeAvatar) {
     saveLocalAvatar(user.id, null);
@@ -483,22 +600,33 @@ export async function updatePilotProfile(input: {
     nextLocalPhoto = "";
   } else if (input.avatarFile) {
     const { dataUrl, blob } = await processAvatarImage(input.avatarFile);
-    nextLocalPhoto = dataUrl;
-    saveLocalAvatar(user.id, dataUrl);
+    const objectPath = `${user.id}/avatar-${Date.now()}.jpg`;
+    const uploaded = await uploadBlobToBucket(AVATARS_BUCKET, objectPath, blob, "image/jpeg");
+    if (uploaded.ok && uploaded.publicUrl) {
+      nextPhotoUrl = uploaded.publicUrl;
+      saveLocalAvatar(user.id, null);
+    } else {
+      nextLocalPhoto = dataUrl;
+      saveLocalAvatar(user.id, dataUrl);
+      if (!uploaded.ok) warnings.push(`Avatar stored locally (${uploaded.error})`);
+    }
+  }
 
-    try {
-      const objectPath = `${user.id}/avatar-${Date.now()}.jpg`;
-      const { error: uploadError } = await client.storage
-        .from("avatars")
-        .upload(objectPath, blob, { upsert: true, contentType: "image/jpeg" });
-      if (!uploadError) {
-        const { data: pub } = client.storage.from("avatars").getPublicUrl(objectPath);
-        if (pub?.publicUrl && pub.publicUrl.length <= 512) {
-          nextPhotoUrl = pub.publicUrl;
-        }
-      }
-    } catch {
-      // Storage bucket optional; local avatar persistence handles it cleanly.
+  if (input.removeBanner) {
+    saveLocalBanner(user.id, null);
+    nextBannerUrl = "";
+    nextLocalBanner = "";
+  } else if (input.bannerFile) {
+    const { dataUrl, blob } = await processBannerImage(input.bannerFile);
+    const objectPath = `${user.id}/profile-cover-${Date.now()}.jpg`;
+    const uploaded = await uploadBlobToBucket(AVATARS_BUCKET, objectPath, blob, "image/jpeg");
+    if (uploaded.ok && uploaded.publicUrl) {
+      nextBannerUrl = uploaded.publicUrl;
+      saveLocalBanner(user.id, null);
+    } else {
+      nextLocalBanner = dataUrl;
+      saveLocalBanner(user.id, dataUrl);
+      if (!uploaded.ok) warnings.push(`Profile cover stored locally (${uploaded.error})`);
     }
   }
 
@@ -537,17 +665,31 @@ export async function updatePilotProfile(input: {
       metadataPatch.avatar_url = nextPhotoUrl;
     }
   }
+  if (input.removeBanner) {
+    metadataPatch.banner_url = "";
+  } else if (nextBannerUrl !== undefined) {
+    metadataPatch.banner_url = nextBannerUrl;
+  }
 
   const { error: authErr } = await client.auth.updateUser({ data: metadataPatch });
   if (authErr) {
     throw new Error(authErr.message || "Could not save profile metadata.");
   }
 
-  const existingLocal = getLocalAvatar(user.id);
+  const existingLocalAvatar = getLocalAvatar(user.id);
   const resolvedPhotoURL =
     nextPhotoUrl !== undefined
       ? nextPhotoUrl || nextLocalPhoto || ""
-      : existingLocal || String(user.user_metadata?.avatar_url || user.user_metadata?.picture || "");
+      : existingLocalAvatar ||
+        (user.user_metadata?.avatar_removed === true
+          ? ""
+          : String(user.user_metadata?.avatar_url || user.user_metadata?.picture || ""));
+
+  const existingLocalBanner = getLocalBanner(user.id);
+  const resolvedBannerURL =
+    nextBannerUrl !== undefined
+      ? nextBannerUrl || nextLocalBanner || ""
+      : existingLocalBanner || String(user.user_metadata?.banner_url || "");
 
   saveLocalPilotDetails(user.id, {
     displayName: cleanName,
@@ -566,6 +708,8 @@ export async function updatePilotProfile(input: {
     organization: cleanOrganization,
     location: cleanLocation,
     photoURL: resolvedPhotoURL,
+    bannerURL: resolvedBannerURL,
+    storageWarning: warnings.length ? warnings.join("; ") : undefined,
   };
 }
 
@@ -667,6 +811,7 @@ export async function uploadSharedAirfoil(input: {
   name: string;
   filename: string;
   coords: number[][];
+  rawDatText?: string;
   uploaderName?: string;
   isNeutralRef?: boolean;
 }): Promise<SharedAirfoilDoc> {
@@ -688,6 +833,18 @@ export async function uploadSharedAirfoil(input: {
   const uploaderName = rawUploader.slice(0, 60) || "Community";
 
   const id = makeValidDocId("foil", cleanName);
+  const ownerFolder = verifiedUid || "community";
+  const storagePath = `${ownerFolder}/${id}.dat`;
+  const datFileBody = input.rawDatText?.trim() ? input.rawDatText : coordsText;
+  const datBlob = new Blob([datFileBody], { type: "text/plain;charset=utf-8" });
+
+  const storageRes = await uploadBlobToBucket(
+    AIRFOILS_BUCKET,
+    storagePath,
+    datBlob,
+    "text/plain;charset=utf-8"
+  );
+
   const payload = {
     id,
     name: cleanName,
@@ -713,7 +870,7 @@ export async function uploadSharedAirfoil(input: {
   }
 
   emitSync("airfoils");
-  return data
+  const mapped = data
     ? mapAirfoilRow(data as Record<string, unknown>)
     : {
         id,
@@ -726,17 +883,29 @@ export async function uploadSharedAirfoil(input: {
         uploaderName,
         uploaderUid: verifiedUid,
         isNeutralRef: payload.is_neutral_ref,
-        visibility: "public",
+        visibility: "public" as const,
         createdAtMs: Date.now(),
+        storagePath,
+        storageUrl: storageRes.ok ? storageRes.publicUrl : getBucketPublicUrl(AIRFOILS_BUCKET, storagePath),
       };
+
+  return {
+    ...mapped,
+    storageWarning: storageRes.ok ? undefined : storageRes.error,
+  };
 }
 
-export async function deleteSharedAirfoil(id: string): Promise<void> {
+export async function deleteSharedAirfoil(id: string, uploaderUid?: string): Promise<void> {
   const client = requireSupabase();
   const { error } = await client.from("airfoils").delete().eq("id", id);
   if (error) {
     throw formatSupabaseError(error, "Could not delete uploaded airfoil.");
   }
+  const {
+    data: { user },
+  } = await client.auth.getUser();
+  const ownerFolder = uploaderUid || user?.id || "community";
+  await removeObjectsFromBucket(AIRFOILS_BUCKET, [`${ownerFolder}/${id}.dat`]);
   emitSync("airfoils");
 }
 
@@ -813,6 +982,13 @@ export async function publishBenchmarkRun(input: {
   ld: number;
   separationPct: number;
   sourceLabel?: string;
+  summaryExtra?: {
+    regime?: string;
+    optimalAlpha?: number;
+    stallAlpha?: number;
+    neurofoilPeakLd?: number;
+    agreementPct?: number | null;
+  };
 }): Promise<BenchmarkRunDoc> {
   const client = requireSupabase();
   const id = makeValidDocId("run", input.airfoilName);
@@ -847,8 +1023,40 @@ export async function publishBenchmarkRun(input: {
     throw formatSupabaseError(error, "Could not publish benchmark to Supabase.");
   }
 
+  const ownerFolder = recorderUid || "community";
+  const storagePath = `${ownerFolder}/${id}.json`;
+  const summaryDocument = {
+    id,
+    airfoilName: payload.airfoil_name,
+    airfoilId: payload.airfoil_id,
+    kind: payload.kind,
+    metrics: {
+      alphaDeg: payload.alpha,
+      reynolds: payload.reynolds,
+      cl: payload.cl,
+      cd: payload.cd,
+      ldRatio: payload.ld,
+      separationPct: payload.separation_pct,
+    },
+    neurofoilSummary: input.summaryExtra || null,
+    sourceLabel: payload.source_label,
+    recorderUid,
+    recordedAt: new Date().toISOString(),
+    databaseTable: "benchmarks",
+    storageBucket: RESULTS_BUCKET,
+  };
+  const summaryBlob = new Blob([JSON.stringify(summaryDocument, null, 2)], {
+    type: "application/json",
+  });
+  const storageRes = await uploadBlobToBucket(
+    RESULTS_BUCKET,
+    storagePath,
+    summaryBlob,
+    "application/json"
+  );
+
   emitSync("benchmarks");
-  return data
+  const mapped = data
     ? mapBenchmarkRow(data as Record<string, unknown>)
     : {
         id,
@@ -863,17 +1071,29 @@ export async function publishBenchmarkRun(input: {
         separationPct: payload.separation_pct,
         sourceLabel: payload.source_label,
         recorderUid,
-        visibility: "public",
+        visibility: "public" as const,
         createdAtMs: Date.now(),
+        storagePath,
+        storageUrl: storageRes.ok ? storageRes.publicUrl : getBucketPublicUrl(RESULTS_BUCKET, storagePath),
       };
+
+  return {
+    ...mapped,
+    storageWarning: storageRes.ok ? undefined : storageRes.error,
+  };
 }
 
-export async function deleteBenchmarkRun(id: string): Promise<void> {
+export async function deleteBenchmarkRun(id: string, recorderUid?: string): Promise<void> {
   const client = requireSupabase();
   const { error } = await client.from("benchmarks").delete().eq("id", id);
   if (error) {
     throw formatSupabaseError(error, "Could not delete benchmark run.");
   }
+  const {
+    data: { user },
+  } = await client.auth.getUser();
+  const ownerFolder = recorderUid || user?.id || "community";
+  await removeObjectsFromBucket(RESULTS_BUCKET, [`${ownerFolder}/${id}.json`]);
   emitSync("benchmarks");
 }
 

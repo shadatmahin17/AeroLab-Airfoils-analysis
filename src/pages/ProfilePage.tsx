@@ -12,8 +12,10 @@ import {
   Download,
   Eye,
   EyeOff,
+  FileJson,
   FileSpreadsheet,
   History,
+  ImagePlus,
   Lock,
   LogIn,
   LogOut,
@@ -154,10 +156,13 @@ export default function ProfilePage({
 }: ProfilePageProps) {
   const navigate = useNavigate();
   const avatarInputRef = useRef<HTMLInputElement>(null);
+  const bannerInputRef = useRef<HTMLInputElement>(null);
 
   const [imgErr, setImgErr] = useState(false);
+  const [bannerErr, setBannerErr] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [storageNotice, setStorageNotice] = useState<string | null>(null);
 
   // Auth form state
   const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
@@ -178,6 +183,9 @@ export default function ProfilePage({
   const [avatarPreviewUrl, setAvatarPreviewUrl] = useState<string | null>(null);
   const [removeAvatarFlag, setRemoveAvatarFlag] = useState(false);
   const [avatarDragOver, setAvatarDragOver] = useState(false);
+  const [bannerFile, setBannerFile] = useState<File | null>(null);
+  const [bannerPreviewUrl, setBannerPreviewUrl] = useState<string | null>(null);
+  const [removeBannerFlag, setRemoveBannerFlag] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
 
   // Filters
@@ -190,12 +198,19 @@ export default function ProfilePage({
   }, [user?.photoURL]);
 
   useEffect(() => {
+    setBannerErr(false);
+  }, [user?.bannerURL]);
+
+  useEffect(() => {
     return () => {
       if (avatarPreviewUrl && avatarPreviewUrl.startsWith("blob:")) {
         URL.revokeObjectURL(avatarPreviewUrl);
       }
+      if (bannerPreviewUrl && bannerPreviewUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(bannerPreviewUrl);
+      }
     };
-  }, [avatarPreviewUrl]);
+  }, [avatarPreviewUrl, bannerPreviewUrl]);
 
   const myUploads = useMemo(
     () =>
@@ -285,6 +300,7 @@ export default function ProfilePage({
     "Pilot";
 
   const activePhotoUrl = user?.photoURL || userProfile?.photoURL || "";
+  const activeBannerUrl = user?.bannerURL || "";
 
   const initials = displayName
     .split(/\s+/)
@@ -301,9 +317,13 @@ export default function ProfilePage({
     setAvatarFile(null);
     setAvatarPreviewUrl(null);
     setRemoveAvatarFlag(false);
+    setBannerFile(null);
+    setBannerPreviewUrl(null);
+    setRemoveBannerFlag(false);
     setEditingProfile(true);
     setErrMsg(null);
     setStatusMsg(null);
+    setStorageNotice(null);
   };
 
   const closeProfileEditor = () => {
@@ -314,6 +334,12 @@ export default function ProfilePage({
     }
     setAvatarPreviewUrl(null);
     setRemoveAvatarFlag(false);
+    setBannerFile(null);
+    if (bannerPreviewUrl && bannerPreviewUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(bannerPreviewUrl);
+    }
+    setBannerPreviewUrl(null);
+    setRemoveBannerFlag(false);
   };
 
   const selectAvatarFile = (file: File | undefined | null) => {
@@ -343,8 +369,40 @@ export default function ProfilePage({
     }
   };
 
+  const selectBannerFile = (file: File | undefined | null) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setErrMsg("Please choose an image file (PNG, JPG, or WebP).");
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setErrMsg("Cover image must be 10 MB or smaller.");
+      return;
+    }
+    setErrMsg(null);
+    if (bannerPreviewUrl && bannerPreviewUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(bannerPreviewUrl);
+    }
+    setBannerFile(file);
+    setBannerPreviewUrl(URL.createObjectURL(file));
+    setRemoveBannerFlag(false);
+    if (!editingProfile) {
+      setDraftName(displayName);
+      setDraftRole(user?.role || "");
+      setDraftOrganization(user?.organization || "");
+      setDraftLocation(user?.location || "");
+      setDraftBio(user?.bio || "");
+      setEditingProfile(true);
+    }
+  };
+
   const handleAvatarInputChange = (e: ChangeEvent<HTMLInputElement>) => {
     selectAvatarFile(e.target.files?.[0]);
+    e.target.value = "";
+  };
+
+  const handleBannerInputChange = (e: ChangeEvent<HTMLInputElement>) => {
+    selectBannerFile(e.target.files?.[0]);
     e.target.value = "";
   };
 
@@ -364,8 +422,9 @@ export default function ProfilePage({
     setSavingProfile(true);
     setErrMsg(null);
     setStatusMsg(null);
+    setStorageNotice(null);
     try {
-      await onUpdateProfile({
+      const saved = await onUpdateProfile({
         displayName: trimmedName,
         bio: draftBio,
         role: draftRole,
@@ -373,10 +432,16 @@ export default function ProfilePage({
         location: draftLocation,
         avatarFile,
         removeAvatar: removeAvatarFlag,
+        bannerFile,
+        removeBanner: removeBannerFlag,
       });
       closeProfileEditor();
       setImgErr(false);
+      setBannerErr(false);
       setStatusMsg("Profile details updated.");
+      if (saved.storageWarning) {
+        setStorageNotice(saved.storageWarning);
+      }
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : "Could not save profile changes.");
     } finally {
@@ -415,15 +480,53 @@ export default function ProfilePage({
     }
   };
 
-  const handleDeleteRun = async (id: string) => {
+  const handleDeleteRun = async (run: BenchmarkRunDoc) => {
     setErrMsg(null);
     setStatusMsg(null);
     try {
-      await deleteBenchmarkRun(id);
+      await deleteBenchmarkRun(run.id, run.recorderUid);
       setStatusMsg("Simulation run deleted.");
     } catch (e) {
       setErrMsg(e instanceof Error ? e.message : "Could not delete simulation run.");
     }
+  };
+
+  const handleDownloadRunSummary = async (run: BenchmarkRunDoc) => {
+    const fallbackSummary = {
+      id: run.id,
+      airfoilName: run.airfoilName,
+      airfoilId: run.airfoilId,
+      kind: run.kind,
+      metrics: {
+        alphaDeg: Number(run.alpha.toFixed(2)),
+        reynolds: run.reynolds,
+        cl: Number(run.cl.toFixed(4)),
+        cd: Number(run.cd.toFixed(4)),
+        ldRatio: Number(run.ld.toFixed(3)),
+        separationPct: Number(run.separationPct.toFixed(1)),
+      },
+      sourceLabel: run.sourceLabel,
+      recordedAt: run.createdAtMs ? new Date(run.createdAtMs).toISOString() : "",
+      storageBucket: "results",
+      databaseTable: "benchmarks",
+    };
+
+    let jsonText = JSON.stringify(fallbackSummary, null, 2);
+    if (run.storageUrl) {
+      try {
+        const res = await fetch(run.storageUrl);
+        if (res.ok) {
+          const text = await res.text();
+          if (text.trim().startsWith("{")) {
+            jsonText = text;
+          }
+        }
+      } catch {
+        // use generated summary JSON fallback
+      }
+    }
+    const safeFoil = run.airfoilName.toLowerCase().replace(/[^a-z0-9]+/g, "_") || "run";
+    downloadText(`${safeFoil}_result_summary.json`, jsonText, "application/json;charset=utf-8");
   };
 
   const handleExportRunsCsv = () => {
@@ -466,11 +569,11 @@ export default function ProfilePage({
     }
   };
 
-  const handleDeleteUpload = async (id: string) => {
+  const handleDeleteUpload = async (item: SharedAirfoilDoc) => {
     setErrMsg(null);
     setStatusMsg(null);
     try {
-      await deleteSharedAirfoil(id);
+      await deleteSharedAirfoil(item.id, item.uploaderUid);
       setStatusMsg("Uploaded airfoil deleted.");
     } catch (e) {
       setErrMsg(e instanceof Error ? e.message : "Could not delete uploaded airfoil.");
@@ -480,6 +583,10 @@ export default function ProfilePage({
   const displayedEditorAvatar = removeAvatarFlag
     ? ""
     : avatarPreviewUrl || activePhotoUrl;
+
+  const displayedEditorBanner = removeBannerFlag
+    ? ""
+    : bannerPreviewUrl || activeBannerUrl;
 
   return (
     <div className="min-h-screen w-full bg-[var(--bg)] text-[var(--text)] flex flex-col font-sans">
@@ -530,7 +637,15 @@ export default function ProfilePage({
         accept="image/png,image/jpeg,image/webp,image/gif"
         onChange={handleAvatarInputChange}
         className="hidden"
-        aria-label="Upload profile photo"
+        aria-label="Upload profile avatar photo"
+      />
+      <input
+        ref={bannerInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        onChange={handleBannerInputChange}
+        className="hidden"
+        aria-label="Upload profile cover image"
       />
 
       {!authReady ? (
@@ -752,130 +867,151 @@ export default function ProfilePage({
 
           <section
             aria-label="Pilot account overview"
-            className="antigravity-glass rounded-2xl p-6 sm:p-7 flex flex-col gap-6"
+            className="antigravity-glass rounded-2xl overflow-hidden flex flex-col"
           >
-            <div className="flex flex-col md:flex-row md:items-start justify-between gap-5">
-              <div className="flex flex-col sm:flex-row sm:items-start gap-5 min-w-0 flex-1">
-                <div className="relative group shrink-0 self-start">
-                  <button
-                    type="button"
-                    onClick={() => avatarInputRef.current?.click()}
-                    title="Upload profile photo"
-                    aria-label="Upload profile photo"
-                    className="relative w-20 h-20 sm:w-22 sm:h-22 rounded-2xl border border-[var(--border)] bg-[var(--accent-light)] overflow-hidden flex items-center justify-center cursor-pointer focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
-                  >
-                    {activePhotoUrl && !imgErr ? (
-                      <img
-                        src={activePhotoUrl}
-                        alt={displayName}
-                        onError={() => setImgErr(true)}
-                        className="w-full h-full object-cover"
-                        referrerPolicy="no-referrer"
-                      />
-                    ) : (
-                      <span className="text-2xl font-bold text-[#1769AA] select-none">
-                        {initials || "A"}
-                      </span>
-                    )}
-                    <span className="absolute inset-0 bg-[#161A1D]/55 text-white opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1 text-[10px] font-semibold">
-                      <Camera size={16} aria-hidden="true" />
-                      <span>Photo</span>
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => avatarInputRef.current?.click()}
-                    aria-label="Change profile photo"
-                    className="absolute -bottom-1.5 -right-1.5 w-7 h-7 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-[#161A1D] hover:text-[#1769AA] hover:border-[#1769AA] shadow-xs flex items-center justify-center transition-colors cursor-pointer"
-                  >
-                    <Camera size={13} aria-hidden="true" />
-                  </button>
-                </div>
+            <div className="relative h-28 sm:h-36 w-full border-b border-[var(--border)] bg-[radial-gradient(#C7D6E4_1px,transparent_1px)] [background-size:16px_16px] bg-[#EEF4F9] overflow-hidden">
+              {activeBannerUrl && !bannerErr && (
+                <img
+                  src={activeBannerUrl}
+                  alt={`${displayName} profile cover`}
+                  onError={() => setBannerErr(true)}
+                  className="w-full h-full object-cover"
+                  referrerPolicy="no-referrer"
+                />
+              )}
+              <button
+                type="button"
+                onClick={() => bannerInputRef.current?.click()}
+                className="absolute top-3 right-3 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-white/90 backdrop-blur-xs border border-[var(--border)] text-[#161A1D] hover:text-[#1769AA] hover:border-[#1769AA] transition-colors inline-flex items-center gap-1.5 shadow-xs cursor-pointer whitespace-nowrap"
+              >
+                <ImagePlus size={13} aria-hidden="true" />
+                <span>{activeBannerUrl && !bannerErr ? "Change cover" : "Add cover"}</span>
+              </button>
+            </div>
 
-                <div className="min-w-0 flex-1 flex flex-col gap-2">
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                    <h1 className="text-2xl font-bold text-[#161A1D] tracking-tight truncate">
-                      {displayName}
-                    </h1>
-                    {user.role && (
-                      <span className="text-xs font-semibold text-[#1769AA]">
-                        {user.role}
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-[#5C6670]">
-                    <span className="font-mono truncate">{user.email}</span>
-                    {user.organization && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span className="inline-flex items-center gap-1">
-                          <Building2 size={12} aria-hidden="true" />
-                          <span>{user.organization}</span>
-                        </span>
-                      </>
-                    )}
-                    {user.location && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span className="inline-flex items-center gap-1">
-                          <MapPin size={12} aria-hidden="true" />
-                          <span>{user.location}</span>
-                        </span>
-                      </>
-                    )}
-                    {userProfile?.createdAtMs ? (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span className="font-mono">
-                          Joined {formatShortDate(userProfile.createdAtMs)}
-                        </span>
-                      </>
-                    ) : null}
-                  </div>
-
-                  {user.bio ? (
-                    <p className="text-sm text-[#161A1D]/85 leading-relaxed max-w-2xl mt-0.5">
-                      {user.bio}
-                    </p>
-                  ) : (
+            <div className="p-6 sm:p-7 pt-0 sm:pt-0 flex flex-col gap-6">
+              <div className="flex flex-col md:flex-row md:items-end justify-between gap-5 -mt-10 sm:-mt-12 relative z-10">
+                <div className="flex flex-col sm:flex-row sm:items-end gap-5 min-w-0 flex-1">
+                  <div className="relative group shrink-0 self-start">
                     <button
                       type="button"
-                      onClick={openProfileEditor}
-                      className="self-start text-xs text-[#5C6670] hover:text-[#1769AA] transition-colors mt-0.5 cursor-pointer"
+                      onClick={() => avatarInputRef.current?.click()}
+                      title="Upload profile avatar"
+                      aria-label="Upload profile avatar"
+                      className="relative w-20 h-20 sm:w-24 sm:h-24 rounded-2xl border border-[var(--border)] ring-4 ring-white bg-[var(--accent-light)] overflow-hidden flex items-center justify-center cursor-pointer focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
                     >
-                      + Add a pilot description or research bio
+                      {activePhotoUrl && !imgErr ? (
+                        <img
+                          src={activePhotoUrl}
+                          alt={displayName}
+                          onError={() => setImgErr(true)}
+                          className="w-full h-full object-cover"
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <span className="text-2xl font-bold text-[#1769AA] select-none">
+                          {initials || "A"}
+                        </span>
+                      )}
+                      <span className="absolute inset-0 bg-[#161A1D]/55 text-white opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1 text-[10px] font-semibold">
+                        <Camera size={16} aria-hidden="true" />
+                        <span>Avatar</span>
+                      </span>
                     </button>
-                  )}
+                    <button
+                      type="button"
+                      onClick={() => avatarInputRef.current?.click()}
+                      aria-label="Change profile avatar"
+                      className="absolute -bottom-1.5 -right-1.5 w-7 h-7 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-[#161A1D] hover:text-[#1769AA] hover:border-[#1769AA] shadow-xs flex items-center justify-center transition-colors cursor-pointer"
+                    >
+                      <Camera size={13} aria-hidden="true" />
+                    </button>
+                  </div>
+
+                  <div className="min-w-0 flex-1 flex flex-col gap-1.5 pt-2 sm:pt-12">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <h1 className="text-2xl font-bold text-[#161A1D] tracking-tight truncate">
+                        {displayName}
+                      </h1>
+                      {user.role && (
+                        <span className="text-xs font-semibold text-[#1769AA]">
+                          {user.role}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-[#5C6670]">
+                      <span className="font-mono truncate">{user.email}</span>
+                      {user.organization && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="inline-flex items-center gap-1">
+                            <Building2 size={12} aria-hidden="true" />
+                            <span>{user.organization}</span>
+                          </span>
+                        </>
+                      )}
+                      {user.location && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="inline-flex items-center gap-1">
+                            <MapPin size={12} aria-hidden="true" />
+                            <span>{user.location}</span>
+                          </span>
+                        </>
+                      )}
+                      {userProfile?.createdAtMs ? (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-mono">
+                            Joined {formatShortDate(userProfile.createdAtMs)}
+                          </span>
+                        </>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 shrink-0 sm:pb-1">
+                  <button
+                    type="button"
+                    onClick={() => (editingProfile ? closeProfileEditor() : openProfileEditor())}
+                    className={`btn btn-sm whitespace-nowrap ${
+                      editingProfile ? "btn-primary-accent" : "btn-secondary"
+                    }`}
+                  >
+                    <SquarePen size={13} aria-hidden="true" />
+                    <span>{editingProfile ? "Editing Profile" : "Edit Profile"}</span>
+                  </button>
+                  <Link to="/" className="btn btn-secondary btn-sm whitespace-nowrap">
+                    <Wind size={13} aria-hidden="true" />
+                    <span>New Run</span>
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={onSignOut}
+                    disabled={authBusy}
+                    className="btn btn-secondary btn-sm hover:text-red-600 hover:border-red-300 whitespace-nowrap"
+                  >
+                    <LogOut size={13} aria-hidden="true" />
+                    <span>Sign out</span>
+                  </button>
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {user.bio ? (
+                <p className="text-sm text-[#161A1D]/85 leading-relaxed max-w-3xl">
+                  {user.bio}
+                </p>
+              ) : (
                 <button
                   type="button"
-                  onClick={() => (editingProfile ? closeProfileEditor() : openProfileEditor())}
-                  className={`btn btn-sm whitespace-nowrap ${
-                    editingProfile ? "btn-primary-accent" : "btn-secondary"
-                  }`}
+                  onClick={openProfileEditor}
+                  className="self-start text-xs text-[#5C6670] hover:text-[#1769AA] transition-colors cursor-pointer"
                 >
-                  <SquarePen size={13} aria-hidden="true" />
-                  <span>{editingProfile ? "Editing Profile" : "Edit Profile"}</span>
+                  + Add a pilot description or research bio
                 </button>
-                <Link to="/" className="btn btn-secondary btn-sm whitespace-nowrap">
-                  <Wind size={13} aria-hidden="true" />
-                  <span>New Run</span>
-                </Link>
-                <button
-                  type="button"
-                  onClick={onSignOut}
-                  disabled={authBusy}
-                  className="btn btn-secondary btn-sm hover:text-red-600 hover:border-red-300 whitespace-nowrap"
-                >
-                  <LogOut size={13} aria-hidden="true" />
-                  <span>Sign out</span>
-                </button>
-              </div>
-            </div>
+              )}
 
             {editingProfile && (
               <form
@@ -896,70 +1032,121 @@ export default function ProfilePage({
                   </button>
                 </div>
 
-                <div
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    setAvatarDragOver(true);
-                  }}
-                  onDragLeave={() => setAvatarDragOver(false)}
-                  onDrop={handleAvatarDrop}
-                  className={`rounded-xl border border-dashed p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-colors ${
-                    avatarDragOver
-                      ? "border-[#1769AA] bg-[var(--accent-light)]"
-                      : "border-[var(--border)] bg-[var(--bg)]"
-                  }`}
-                >
-                  <div className="flex items-center gap-3.5 min-w-0">
-                    <div className="w-16 h-16 rounded-xl border border-[var(--border)] bg-[var(--surface)] overflow-hidden flex items-center justify-center shrink-0">
-                      {displayedEditorAvatar ? (
-                        <img
-                          src={displayedEditorAvatar}
-                          alt="Profile preview"
-                          className="w-full h-full object-cover"
-                          referrerPolicy="no-referrer"
-                        />
-                      ) : (
-                        <span className="text-lg font-bold text-[#1769AA]">
-                          {initials || "A"}
-                        </span>
-                      )}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-xs font-bold text-[#161A1D]">
-                        Profile Image
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setAvatarDragOver(true);
+                    }}
+                    onDragLeave={() => setAvatarDragOver(false)}
+                    onDrop={handleAvatarDrop}
+                    className={`rounded-xl border border-dashed p-4 flex items-center justify-between gap-3 transition-colors ${
+                      avatarDragOver
+                        ? "border-[#1769AA] bg-[var(--accent-light)]"
+                        : "border-[var(--border)] bg-[var(--bg)]"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-14 h-14 rounded-xl border border-[var(--border)] bg-[var(--surface)] overflow-hidden flex items-center justify-center shrink-0">
+                        {displayedEditorAvatar ? (
+                          <img
+                            src={displayedEditorAvatar}
+                            alt="Avatar preview"
+                            className="w-full h-full object-cover"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <span className="text-base font-bold text-[#1769AA]">
+                            {initials || "A"}
+                          </span>
+                        )}
                       </div>
-                      <p className="text-[11.5px] text-[#5C6670] mt-0.5">
-                        Drag & drop or upload a PNG, JPG, or WebP photo.
-                      </p>
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-[#161A1D]">Avatar Image</div>
+                        <p className="text-[11px] text-[#5C6670] mt-0.5 truncate">
+                          Drop or upload · Supabase bucket
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => avatarInputRef.current?.click()}
+                        className="btn btn-secondary btn-sm whitespace-nowrap"
+                      >
+                        <Upload size={12} aria-hidden="true" />
+                        <span>Upload</span>
+                      </button>
+                      {displayedEditorAvatar && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAvatarFile(null);
+                            if (avatarPreviewUrl && avatarPreviewUrl.startsWith("blob:")) {
+                              URL.revokeObjectURL(avatarPreviewUrl);
+                            }
+                            setAvatarPreviewUrl(null);
+                            setRemoveAvatarFlag(true);
+                          }}
+                          aria-label="Remove avatar image"
+                          className="p-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[#5C6670] hover:text-red-600 hover:border-red-300 transition-colors cursor-pointer"
+                        >
+                          <Trash2 size={13} aria-hidden="true" />
+                        </button>
+                      )}
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => avatarInputRef.current?.click()}
-                      className="btn btn-secondary btn-sm whitespace-nowrap"
-                    >
-                      <Upload size={13} aria-hidden="true" />
-                      <span>Upload Photo</span>
-                    </button>
-                    {displayedEditorAvatar && (
+                  <div className="rounded-xl border border-dashed border-[var(--border)] bg-[var(--bg)] p-4 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-20 h-14 rounded-xl border border-[var(--border)] bg-[var(--surface)] overflow-hidden flex items-center justify-center shrink-0">
+                        {displayedEditorBanner ? (
+                          <img
+                            src={displayedEditorBanner}
+                            alt="Profile cover preview"
+                            className="w-full h-full object-cover"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <ImagePlus size={18} className="text-[#5C6670]" aria-hidden="true" />
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-[#161A1D]">Profile Image</div>
+                        <p className="text-[11px] text-[#5C6670] mt-0.5 truncate">
+                          Wide cover banner · Supabase bucket
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
                       <button
                         type="button"
-                        onClick={() => {
-                          setAvatarFile(null);
-                          if (avatarPreviewUrl && avatarPreviewUrl.startsWith("blob:")) {
-                            URL.revokeObjectURL(avatarPreviewUrl);
-                          }
-                          setAvatarPreviewUrl(null);
-                          setRemoveAvatarFlag(true);
-                        }}
-                        className="btn btn-secondary btn-sm hover:text-red-600 hover:border-red-300 whitespace-nowrap"
+                        onClick={() => bannerInputRef.current?.click()}
+                        className="btn btn-secondary btn-sm whitespace-nowrap"
                       >
-                        <Trash2 size={13} aria-hidden="true" />
-                        <span>Remove</span>
+                        <Upload size={12} aria-hidden="true" />
+                        <span>Upload</span>
                       </button>
-                    )}
+                      {displayedEditorBanner && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBannerFile(null);
+                            if (bannerPreviewUrl && bannerPreviewUrl.startsWith("blob:")) {
+                              URL.revokeObjectURL(bannerPreviewUrl);
+                            }
+                            setBannerPreviewUrl(null);
+                            setRemoveBannerFlag(true);
+                          }}
+                          aria-label="Remove profile cover image"
+                          className="p-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[#5C6670] hover:text-red-600 hover:border-red-300 transition-colors cursor-pointer"
+                        >
+                          <Trash2 size={13} aria-hidden="true" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -1148,6 +1335,7 @@ export default function ProfilePage({
                 </div>
               </div>
             </div>
+            </div>
           </section>
 
           {flightEnvelope && (
@@ -1224,6 +1412,11 @@ export default function ProfilePage({
             <div className="flex items-center gap-2 text-xs font-medium text-[#047857] bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2.5">
               <Check size={14} className="shrink-0" aria-hidden="true" />
               <span>{statusMsg}</span>
+            </div>
+          )}
+          {storageNotice && (
+            <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5">
+              {storageNotice} — Run the latest Supabase schema SQL to provision storage buckets.
             </div>
           )}
           {(errMsg || authError) && (
@@ -1372,7 +1565,16 @@ export default function ProfilePage({
                               </button>
                               <button
                                 type="button"
-                                onClick={() => handleDeleteRun(run.id)}
+                                onClick={() => void handleDownloadRunSummary(run)}
+                                title="Download result summary JSON"
+                                aria-label={`Download summary for ${run.airfoilName}`}
+                                className="p-1.5 rounded-md text-[#5C6670] hover:text-[#1769AA] transition-colors cursor-pointer"
+                              >
+                                <FileJson size={13} aria-hidden="true" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteRun(run)}
                                 title="Delete run"
                                 aria-label={`Delete run ${run.airfoilName}`}
                                 className="p-1.5 rounded-md text-[#5C6670] hover:text-red-600 transition-colors cursor-pointer"
@@ -1479,7 +1681,7 @@ export default function ProfilePage({
                         </button>
                         <button
                           type="button"
-                          onClick={() => handleDeleteUpload(item.id)}
+                          onClick={() => handleDeleteUpload(item)}
                           title="Delete uploaded airfoil"
                           aria-label={`Delete ${item.name}`}
                           className="p-1.5 rounded-md text-[#5C6670] hover:text-red-600 transition-colors cursor-pointer"

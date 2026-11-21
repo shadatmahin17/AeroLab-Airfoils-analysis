@@ -157,6 +157,7 @@ export default function AirfoilPicker({
             name: foilName,
             filename: f.name,
             coords,
+            rawDatText: content,
             uploaderName: uploaderName || (user ? user.displayName || "Community" : "Community"),
           });
           onChoiceChange(`cloud:${uploaded.id}`);
@@ -174,7 +175,11 @@ export default function AirfoilPicker({
             const nextUploads = sharedAirfoils.filter((a) => a.uploaderUid === user.uid).length + 1;
             void ensureUserProfile({ totalUploads: nextUploads }).catch(() => {});
           }
-          setShareMsg(`Published "${uploaded.name}" to Community Library.`);
+          setShareMsg(
+            uploaded.storageWarning
+              ? `Published "${uploaded.name}" to Community DB (Storage: ${uploaded.storageWarning}).`
+              : `Published "${uploaded.name}" and stored .dat in Supabase Storage.`
+          );
         } catch (uploadErr) {
           setErr(uploadErr instanceof Error ? uploadErr.message : "Failed to publish airfoil to Supabase.");
         } finally {
@@ -204,7 +209,11 @@ export default function AirfoilPicker({
         const nextUploads = sharedAirfoils.filter((a) => a.uploaderUid === user.uid).length + 1;
         void ensureUserProfile({ totalUploads: nextUploads }).catch(() => {});
       }
-      setShareMsg(`Published "${uploaded.name}" so anyone can access it.`);
+      setShareMsg(
+        uploaded.storageWarning
+          ? `Published "${uploaded.name}" to Community DB (Storage: ${uploaded.storageWarning}).`
+          : `Published "${uploaded.name}" and stored .dat in Supabase Storage.`
+      );
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Could not share airfoil.");
     } finally {
@@ -215,7 +224,7 @@ export default function AirfoilPicker({
   const handleDelete = async (item: SharedAirfoilDoc) => {
     setErr(null);
     try {
-      await deleteSharedAirfoil(item.id);
+      await deleteSharedAirfoil(item.id, item.uploaderUid);
       if (choice === `cloud:${item.id}`) {
         void handleChoice("naca0012.dat");
       }

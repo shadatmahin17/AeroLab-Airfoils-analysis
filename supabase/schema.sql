@@ -145,3 +145,111 @@ begin
   end loop;
 end
 $$;
+
+-- 5. Supabase Storage Buckets (.dat airfoils, pilot avatars/profile images, result summaries)
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values
+  ('airfoils', 'airfoils', true, 2097152, array['text/plain', 'application/octet-stream']),
+  ('avatars', 'avatars', true, 5242880, array['image/jpeg', 'image/png', 'image/webp', 'image/gif']),
+  ('results', 'results', true, 5242880, array['application/json', 'text/csv', 'text/plain'])
+on conflict (id) do update
+set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+-- Storage RLS: airfoils (.dat files)
+drop policy if exists "Public read airfoils bucket" on storage.objects;
+create policy "Public read airfoils bucket"
+  on storage.objects
+  for select
+  using (bucket_id = 'airfoils');
+
+drop policy if exists "Anyone or owner upload airfoils bucket" on storage.objects;
+create policy "Anyone or owner upload airfoils bucket"
+  on storage.objects
+  for insert
+  with check (
+    bucket_id = 'airfoils'
+    and (
+      (auth.uid() is null and (storage.foldername(name))[1] = 'community')
+      or (auth.uid() is not null and (storage.foldername(name))[1] = auth.uid()::text)
+    )
+  );
+
+drop policy if exists "Owners delete airfoils bucket" on storage.objects;
+create policy "Owners delete airfoils bucket"
+  on storage.objects
+  for delete
+  using (
+    bucket_id = 'airfoils'
+    and auth.uid() is not null
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+-- Storage RLS: avatars (avatar & profile cover images)
+drop policy if exists "Public read avatars bucket" on storage.objects;
+create policy "Public read avatars bucket"
+  on storage.objects
+  for select
+  using (bucket_id = 'avatars');
+
+drop policy if exists "Owners upload avatars bucket" on storage.objects;
+create policy "Owners upload avatars bucket"
+  on storage.objects
+  for insert
+  with check (
+    bucket_id = 'avatars'
+    and auth.uid() is not null
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+drop policy if exists "Owners update avatars bucket" on storage.objects;
+create policy "Owners update avatars bucket"
+  on storage.objects
+  for update
+  using (
+    bucket_id = 'avatars'
+    and auth.uid() is not null
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+drop policy if exists "Owners delete avatars bucket" on storage.objects;
+create policy "Owners delete avatars bucket"
+  on storage.objects
+  for delete
+  using (
+    bucket_id = 'avatars'
+    and auth.uid() is not null
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+-- Storage RLS: results (simulation result summaries)
+drop policy if exists "Public read results bucket" on storage.objects;
+create policy "Public read results bucket"
+  on storage.objects
+  for select
+  using (bucket_id = 'results');
+
+drop policy if exists "Anyone or owner upload results bucket" on storage.objects;
+create policy "Anyone or owner upload results bucket"
+  on storage.objects
+  for insert
+  with check (
+    bucket_id = 'results'
+    and (
+      (auth.uid() is null and (storage.foldername(name))[1] = 'community')
+      or (auth.uid() is not null and (storage.foldername(name))[1] = auth.uid()::text)
+    )
+  );
+
+drop policy if exists "Owners delete results bucket" on storage.objects;
+create policy "Owners delete results bucket"
+  on storage.objects
+  for delete
+  using (
+    bucket_id = 'results'
+    and auth.uid() is not null
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
