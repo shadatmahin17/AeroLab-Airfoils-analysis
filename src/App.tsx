@@ -867,6 +867,7 @@ function WorkstationView({
 
               <ShapeEditor2D
                 sourceCoords={airfoil.coords}
+                currentCoords={activeCoords}
                 foilName={airfoil.name}
                 onCoordsChange={(coords) => {
                   setActiveCoords(coords);
