@@ -1,0 +1,6 @@
+{
+  "name": "AeroLab - Airfoil Analysis Tool",
+  "description": "AeroLab: free browser-based airfoil analysis, inverse design, finite wing, and aeroelasticity tool powered by XFOIL.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
