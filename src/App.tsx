@@ -1,29 +1,65 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type MutableRefObject,
+  type SetStateAction,
+} from "react";
 import { Link, Navigate, Route, Routes } from "react-router-dom";
 import {
-  Activity, AlertTriangle, CheckCircle2, Cpu, Download,
-  Keyboard, LineChart, Pause, PenTool, Play, RotateCcw, Sliders, User, Wind, Layers,
+  AlertTriangle,
+  CheckCircle2,
+  Download,
+  Gauge,
+  Keyboard,
+  Layers,
+  Pause,
+  Play,
+  Radar,
+  RotateCcw,
+  SlidersHorizontal,
+  Spline,
+  TrendingUp,
+  User,
+  UserCheck,
+  Wind,
 } from "lucide-react";
-import AirfoilPicker from "./components/AirfoilPicker.jsx";
-import BenchmarkComparison from "./components/BenchmarkComparison.jsx";
-import { useSupabase } from "./components/SupabaseProvider.tsx";
-import ResultsAnalytics from "./components/ResultsAnalytics.jsx";
-import ShapeEditor2D from "./components/ShapeEditor2D.jsx";
-import { Alert, ParserBox, SliderField } from "./components/ui.jsx";
-import ProfilePage from "./pages/ProfilePage.jsx";
+import AirfoilPicker from "./components/AirfoilPicker.tsx";
+import BenchmarkComparison from "./components/BenchmarkComparison.tsx";
+import { useSupabase, type AppUser } from "./components/SupabaseProvider.tsx";
+import ResultsAnalytics from "./components/ResultsAnalytics.tsx";
+import ShapeEditor2D from "./components/ShapeEditor2D.tsx";
+import { Alert, ParserBox, SliderField } from "./components/ui.tsx";
+import ProfilePage from "./pages/ProfilePage.tsx";
 import { LBM, createWindTunnel2D, lbmNaca4, lbmSimRe } from "./lib/lbm/tunnel2d.js";
-import { downloadText, EXAMPLE_AIRFOILS, loadExample } from "./lib/files.js";
+import { EXAMPLE_AIRFOILS, downloadText, loadExample } from "./lib/files.js";
 import { parseDatText } from "./lib/airfoilParser.js";
 import { runNeuroFoilPrediction } from "./lib/neurofoil.ts";
+import type {
+  BenchmarkRunDoc,
+  NeutralReferenceData,
+  SharedAirfoilDoc,
+  UserProfileDoc,
+} from "./lib/airfoilRepository.ts";
+import type {
+  AirfoilSelection,
+  Coord2D,
+  TelemetrySample,
+  TunnelController,
+  TunnelStats,
+} from "./types.ts";
 
-const FIELD_MODES = [
+const FIELD_MODES: Array<[string, string]> = [
   ["0", "Velocity"],
   ["1", "Pressure (Cp)"],
   ["2", "Vorticity"],
   ["3", "Smoke"],
 ];
 
-const FIELD_GUIDE = [
+const FIELD_GUIDE: Array<[string, string, string]> = [
   ["0", "Velocity", "Flow speed relative to freestream. Reveals suction peak & wake deficit."],
   ["1", "Pressure (Cp)", "Surface pressure distribution. Cool = suction, warm = stagnation."],
   ["2", "Vorticity", "Shear-layer rotation & trailing-edge vortex shedding."],
@@ -31,7 +67,34 @@ const FIELD_GUIDE = [
 ];
 
 const DEFAULT_ALPHA = 6;
-const DEFAULT_U0_MM = 60; // U0 = 0.060 (Re ~ 2,560)
+const DEFAULT_U0_MM = 60;
+
+interface WorkstationViewProps {
+  choice: string;
+  setChoice: Dispatch<SetStateAction<string>>;
+  airfoil: AirfoilSelection;
+  activeCoords: Coord2D[];
+  setActiveCoords: Dispatch<SetStateAction<Coord2D[]>>;
+  onSelectAirfoil: (next: AirfoilSelection) => void;
+  user: AppUser | null;
+  userProfile: UserProfileDoc | null;
+  benchmarks: BenchmarkRunDoc[];
+  sharedAirfoils: SharedAirfoilDoc[];
+  cloudError: string | null;
+  customRef: NeutralReferenceData | null;
+  setCustomRef: Dispatch<SetStateAction<NeutralReferenceData | null>>;
+  alpha: number;
+  setAlpha: Dispatch<SetStateAction<number>>;
+  fieldMode: string;
+  setFieldMode: Dispatch<SetStateAction<string>>;
+  u0Scaled: number;
+  setU0Scaled: Dispatch<SetStateAction<number>>;
+  samples: TelemetrySample[];
+  setSamples: Dispatch<SetStateAction<TelemetrySample[]>>;
+  sampleIdRef: MutableRefObject<number>;
+  appendSample: (next: TunnelStats) => void;
+  tunnelRef: MutableRefObject<TunnelController | null>;
+}
 
 function WorkstationView({
   choice,
@@ -58,26 +121,25 @@ function WorkstationView({
   sampleIdRef,
   appendSample,
   tunnelRef,
-}) {
-  const canvasRef = useRef(null);
+}: WorkstationViewProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const [paused, setPaused] = useState(false);
   const [stepsPerFrame, setStepsPerFrame] = useState(10);
-  const [glError, setGlError] = useState(null);
+  const [glError, setGlError] = useState<string | null>(null);
 
-  const [mobileTab, setMobileTab] = useState("tunnel");
+  const [mobileTab, setMobileTab] = useState<"results" | "tunnel" | "controls">("tunnel");
   const [showLeftSidebar, setShowLeftSidebar] = useState(true);
   const [showRightSidebar, setShowRightSidebar] = useState(true);
-  const [resultsTab, setResultsTab] = useState("analytics");
-  const [controlsTab, setControlsTab] = useState("flow");
+  const [resultsTab, setResultsTab] = useState<"analytics" | "neurofoil">("analytics");
+  const [controlsTab, setControlsTab] = useState<"flow" | "airfoils" | "shape">("flow");
 
-  const [stats, setStats] = useState({
+  const [stats, setStats] = useState<TunnelStats>({
     cl: null,
     cd: null,
     reynolds: Math.round(lbmSimRe(u0Scaled / 1000) / 10) * 10,
     separationPct: 0,
   });
 
-  // Mount WebGL2 2D Lattice-Boltzmann engine
   useEffect(() => {
     const cv = canvasRef.current;
     if (!cv) return undefined;
@@ -87,13 +149,13 @@ function WorkstationView({
       alphaDeg: alpha,
       u0: u0Scaled / 1000,
       fieldMode: Number(fieldMode),
-      onStats: (next) => {
+      onStats: (next: TunnelStats) => {
         setStats(next);
         appendSample(next);
       },
-      onSteps: (s) => setStepsPerFrame(s),
-      onError: (msg) => setGlError(msg),
-    });
+      onSteps: (s: number) => setStepsPerFrame(s),
+      onError: (msg: string) => setGlError(msg),
+    }) as TunnelController;
     tunnelRef.current = ctrl;
     return () => {
       ctrl.destroy();
@@ -101,17 +163,17 @@ function WorkstationView({
     };
   }, [appendSample, tunnelRef]);
 
-  const handleAlphaChange = (val) => {
+  const handleAlphaChange = (val: number) => {
     setAlpha(val);
     tunnelRef.current?.setAlpha(val);
   };
 
-  const handleFieldChange = (val) => {
+  const handleFieldChange = (val: string) => {
     setFieldMode(val);
     tunnelRef.current?.setField(Number(val));
   };
 
-  const handleReynoldsChange = (val) => {
+  const handleReynoldsChange = (val: number) => {
     setU0Scaled(val);
     tunnelRef.current?.setU0(val / 1000);
   };
@@ -150,9 +212,8 @@ function WorkstationView({
     downloadText(`${base.replace(/[^\w.-]+/g, "_")}.dat`, text);
   };
 
-  // Keyboard shortcuts
   useEffect(() => {
-    const onKeyDown = (e) => {
+    const onKeyDown = (e: KeyboardEvent) => {
       const tag = document.activeElement?.tagName?.toLowerCase();
       if (tag === "input" || tag === "textarea" || tag === "select") return;
 
@@ -196,7 +257,7 @@ function WorkstationView({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleResetAll, handleTogglePause, setAlpha, setU0Scaled, tunnelRef]);
 
-  const handleHeaderClick = (section) => {
+  const handleHeaderClick = (section: "results" | "tunnel" | "controls") => {
     setMobileTab(section);
     if (typeof window !== "undefined" && window.innerWidth >= 1024) {
       if (section === "results") setShowLeftSidebar((p) => !p);
@@ -239,9 +300,7 @@ function WorkstationView({
 
   return (
     <div className="h-screen h-[100dvh] w-full overflow-hidden bg-[var(--bg)] text-[var(--text)] flex flex-col font-sans select-none selection:bg-[var(--accent-light)] selection:text-[var(--accent)]">
-      {/* 1. TOP BAR — WORKSTATION HEADER */}
       <header className="h-12 sm:h-14 px-3 sm:px-5 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] border-b border-[var(--border)] bg-[var(--surface)] flex items-center justify-between gap-2 sm:gap-4 z-30 flex-shrink-0">
-        {/* Left Zone: Brand & single-line active foil metadata */}
         <div className="flex items-center gap-3 min-w-0 shrink-0">
           <div className="flex items-center gap-2">
             <img
@@ -269,7 +328,6 @@ function WorkstationView({
           </div>
         </div>
 
-        {/* Right Zone: Workstation switches + individual Profile page link */}
         <div className="flex items-center gap-2 shrink-0">
           <nav
             aria-label="Workstation sections"
@@ -284,7 +342,7 @@ function WorkstationView({
                   : "text-[#5C6670] hover:text-[#161A1D]"
               } ${showLeftSidebar ? "lg:bg-[var(--accent-light)] lg:text-[#1769AA]" : "lg:bg-transparent lg:text-[#5C6670]"}`}
             >
-              <Activity size={13} className="hidden min-[380px]:inline shrink-0" aria-hidden="true" />
+              <Gauge size={13} className="hidden min-[380px]:inline shrink-0" aria-hidden="true" />
               <span>Results</span>
             </button>
 
@@ -310,7 +368,7 @@ function WorkstationView({
                   : "text-[#5C6670] hover:text-[#161A1D]"
               } ${showRightSidebar ? "lg:bg-[var(--accent-light)] lg:text-[#1769AA]" : "lg:bg-transparent lg:text-[#5C6670]"}`}
             >
-              <Sliders size={13} className="hidden min-[380px]:inline shrink-0" aria-hidden="true" />
+              <SlidersHorizontal size={13} className="hidden min-[380px]:inline shrink-0" aria-hidden="true" />
               <span>Controls</span>
             </button>
           </nav>
@@ -327,6 +385,8 @@ function WorkstationView({
                 className="w-4 h-4 rounded-full object-cover shrink-0"
                 referrerPolicy="no-referrer"
               />
+            ) : user ? (
+              <UserCheck size={13} className="text-[#1769AA] shrink-0" aria-hidden="true" />
             ) : (
               <User size={13} className="text-[#1769AA] shrink-0" aria-hidden="true" />
             )}
@@ -335,9 +395,7 @@ function WorkstationView({
         </div>
       </header>
 
-      {/* 2. MAIN WORKSTATION BODY — 3-PART STRUCTURE */}
       <main className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0 min-w-0 relative pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]">
-        {/* LEFT PART: RESULTS SECTION (PINNED TELEMETRY + ANALYTICS / NEUROFOIL) */}
         <aside
           id="results"
           aria-label="Results section"
@@ -347,10 +405,9 @@ function WorkstationView({
             min-w-0 flex-shrink-0 h-full overflow-y-auto overscroll-contain custom-scrollbar lg:border-r border-[var(--border)] bg-[var(--bg)] p-3 sm:p-4 flex-col gap-3 z-20
           `}
         >
-          {/* Section Title + Compact Status Metadata */}
           <div className="flex items-center justify-between gap-2 pb-2 border-b border-[var(--border)]">
             <div className="flex items-center gap-1.5">
-              <Activity size={15} className="text-[#1769AA]" aria-hidden="true" />
+              <Gauge size={15} className="text-[#1769AA]" aria-hidden="true" />
               <h2 className="text-xs font-bold tracking-wide uppercase text-[#161A1D]">Results</h2>
             </div>
             <span className="text-[11px] font-mono text-[#5C6670] truncate">
@@ -358,7 +415,6 @@ function WorkstationView({
             </span>
           </div>
 
-          {/* Pinned Single-Elevation Telemetry Strip */}
           <div className="antigravity-glass rounded-xl overflow-hidden shrink-0">
             <div className="grid grid-cols-2 divide-x divide-y divide-[var(--border)]">
               <div className="p-2.5">
@@ -400,16 +456,17 @@ function WorkstationView({
             </div>
           </div>
 
-          {/* Results Sub-Navigation Tabs: Analytics | NeuroFoil */}
           <div
             role="tablist"
             aria-label="Results views"
             className="grid grid-cols-2 p-0.5 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-[11.5px] gap-0.5 shrink-0"
           >
-            {[
-              { id: "analytics", label: "Analytics", Icon: LineChart },
-              { id: "neurofoil", label: "NeuroFoil", Icon: Cpu },
-            ].map(({ id, label, Icon }) => {
+            {(
+              [
+                { id: "analytics", label: "Analytics", Icon: TrendingUp },
+                { id: "neurofoil", label: "NeuroFoil", Icon: Radar },
+              ] as const
+            ).map(({ id, label, Icon }) => {
               const active = resultsTab === id;
               return (
                 <button
@@ -431,7 +488,6 @@ function WorkstationView({
             })}
           </div>
 
-          {/* Active Results Sub-View */}
           {resultsTab === "analytics" && (
             <ResultsAnalytics
               samples={samples}
@@ -461,7 +517,6 @@ function WorkstationView({
           )}
         </aside>
 
-        {/* CENTER PART: FIXED 2D WIND TUNNEL CANVAS VIEWPORT */}
         <section
           id="tunnel"
           aria-label="2D Wind Tunnel Viewport"
@@ -472,7 +527,6 @@ function WorkstationView({
         >
           <div className="tunnel-stage flex-1 min-h-0 w-full">
             <div className="tunnel-card rounded-xl border border-[var(--border)] bg-[var(--dark)] flex flex-col overflow-hidden">
-              {/* Viewport Top HUD */}
               <div className="px-3 py-2 border-b border-[var(--dark-surface)] flex items-center justify-between gap-2 flex-shrink-0 bg-[#11161A]">
                 <div className="flex items-center gap-2 min-w-0">
                   <Wind size={15} className="text-[#38BDF8] shrink-0" aria-hidden="true" />
@@ -514,7 +568,6 @@ function WorkstationView({
                 </div>
               )}
 
-              {/* 640 × 320 Canvas Fitting Stage */}
               <canvas
                 ref={canvasRef}
                 width={640}
@@ -522,7 +575,6 @@ function WorkstationView({
                 className="tunnel-canvas bg-[#0D1114]"
               />
 
-              {/* Viewport Bottom Meta Bar */}
               <div className="px-3 py-1.5 border-t border-[var(--dark-surface)] flex items-center justify-between gap-2 text-[11px] font-mono tabular-nums text-slate-400 flex-shrink-0 bg-[#11161A]">
                 <span className="truncate">640 × 320 D2Q9 Smagorinsky LES</span>
                 <span className="shrink-0">
@@ -532,7 +584,6 @@ function WorkstationView({
             </div>
           </div>
 
-          {/* Mobile/Tablet Live Readout & Quick Controls */}
           <div className="lg:hidden flex flex-col gap-2 flex-shrink-0">
             <div className="grid grid-cols-4 divide-x divide-[var(--border)] antigravity-glass rounded-lg overflow-hidden [@media(max-height:520px)]:hidden">
               <div className="px-2 py-1.5 text-center">
@@ -610,7 +661,6 @@ function WorkstationView({
           </div>
         </section>
 
-        {/* RIGHT PART: CONTROL PANEL (3 ORGANIZED SUB-TABS: FLOW, AIRFOILS, SHAPE) */}
         <form
           id="controls"
           aria-label="Control panel"
@@ -621,10 +671,9 @@ function WorkstationView({
             min-w-0 flex-shrink-0 h-full overflow-y-auto overscroll-contain custom-scrollbar lg:border-l border-[var(--border)] bg-[var(--bg)] p-3 sm:p-4 flex-col gap-3 z-20
           `}
         >
-          {/* Section Title */}
           <div className="flex items-center justify-between gap-2 pb-2 border-b border-[var(--border)]">
             <div className="flex items-center gap-1.5">
-              <Sliders size={15} className="text-[#1769AA]" aria-hidden="true" />
+              <SlidersHorizontal size={15} className="text-[#1769AA]" aria-hidden="true" />
               <h2 className="text-xs font-bold tracking-wide uppercase text-[#161A1D]">
                 Controls
               </h2>
@@ -632,17 +681,18 @@ function WorkstationView({
             <span className="text-[11px] font-mono text-[#5C6670]">{activeFieldLabel}</span>
           </div>
 
-          {/* Controls Sub-Navigation Tabs: Flow | Airfoils | Shape */}
           <div
             role="tablist"
             aria-label="Control sections"
             className="grid grid-cols-3 p-0.5 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-[11.5px] gap-0.5 shrink-0"
           >
-            {[
-              { id: "flow", label: "Flow", Icon: Sliders },
-              { id: "airfoils", label: "Airfoils", Icon: Layers },
-              { id: "shape", label: "Shape", Icon: PenTool },
-            ].map(({ id, label, Icon }) => {
+            {(
+              [
+                { id: "flow", label: "Flow", Icon: SlidersHorizontal },
+                { id: "airfoils", label: "Airfoils", Icon: Layers },
+                { id: "shape", label: "Shape", Icon: Spline },
+              ] as const
+            ).map(({ id, label, Icon }) => {
               const active = controlsTab === id;
               return (
                 <button
@@ -664,10 +714,8 @@ function WorkstationView({
             })}
           </div>
 
-          {/* TAB 1: FLOW PARAMETERS, FIELD MODE & ACTIONS */}
           {controlsTab === "flow" && (
             <div className="flex flex-col gap-3">
-              {/* Angle & Reynolds Card */}
               <div className="antigravity-glass rounded-xl p-3.5 flex flex-col gap-3.5">
                 <div className="flex flex-col gap-2">
                   <SliderField
@@ -723,7 +771,6 @@ function WorkstationView({
                 </div>
               </div>
 
-              {/* Unified Field Visualization Selector */}
               <div className="antigravity-glass rounded-xl p-3.5 flex flex-col gap-2">
                 <div className="text-[11.5px] font-bold text-[#161A1D]">
                   Field Visualization
@@ -759,7 +806,6 @@ function WorkstationView({
                 </div>
               </div>
 
-              {/* Quick Simulation Actions & Exports */}
               <div className="antigravity-glass rounded-xl p-3.5 flex flex-col gap-2">
                 <div className="grid grid-cols-2 gap-2">
                   <button type="button" className="btn btn-secondary btn-sm whitespace-nowrap" onClick={handleTogglePause}>
@@ -785,7 +831,6 @@ function WorkstationView({
             </div>
           )}
 
-          {/* TAB 2: AIRFOIL PICKER, UPLOAD & COMMUNITY LIBRARY */}
           {controlsTab === "airfoils" && (
             <div className="antigravity-glass rounded-xl p-3.5 flex flex-col gap-2.5">
               <AirfoilPicker
@@ -810,12 +855,11 @@ function WorkstationView({
             </div>
           )}
 
-          {/* TAB 3: INTERACTIVE BÉZIER SHAPE EDITOR */}
           {controlsTab === "shape" && (
             <div className="antigravity-glass rounded-xl p-3.5 flex flex-col gap-3">
               <div className="flex items-center justify-between gap-2 pb-2 border-b border-[var(--border)]">
                 <div className="flex items-center gap-1.5 text-xs font-bold text-[#161A1D]">
-                  <PenTool size={13} className="text-[#1769AA]" aria-hidden="true" />
+                  <Spline size={13} className="text-[#1769AA]" aria-hidden="true" />
                   <span>Bézier Geometry Editor</span>
                 </div>
                 <span className="text-[11px] font-mono text-[#5C6670] truncate">{airfoil.name}</span>
@@ -838,7 +882,6 @@ function WorkstationView({
         </form>
       </main>
 
-      {/* 3. WORKSTATION BOTTOM STATUS STRIP */}
       <footer className="min-h-7 py-1 pb-[max(0.25rem,env(safe-area-inset-bottom))] pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] sm:px-5 border-t border-[var(--border)] bg-[var(--surface)] flex items-center justify-between gap-2 text-[11px] text-[#5C6670] z-30 flex-shrink-0 overflow-hidden">
         <div className="hidden xl:flex items-center gap-2.5 whitespace-nowrap">
           <div className="flex items-center gap-1 text-[#161A1D] font-semibold">
@@ -866,18 +909,18 @@ function WorkstationView({
 }
 
 export default function App() {
-  const tunnelRef = useRef(null);
+  const tunnelRef = useRef<TunnelController | null>(null);
   const userSelectedAirfoilRef = useRef(false);
 
   const [choice, setChoice] = useState("naca0012.dat");
-  const [airfoil, setAirfoil] = useState(() => ({
+  const [airfoil, setAirfoil] = useState<AirfoilSelection>(() => ({
     name: "NACA 0012",
     filename: "naca0012.dat",
     coords: lbmNaca4(0, 4, 12, 60),
     fixes: null,
     isCustom: false,
   }));
-  const [activeCoords, setActiveCoords] = useState(() => lbmNaca4(0, 4, 12, 60));
+  const [activeCoords, setActiveCoords] = useState<Coord2D[]>(() => lbmNaca4(0, 4, 12, 60));
 
   const {
     user,
@@ -890,16 +933,17 @@ export default function App() {
     signUpWithEmail,
     signInWithGoogle,
     signOut,
+    updateProfile,
     sharedAirfoils,
     benchmarks,
     cloudError,
   } = useSupabase();
-  const [customRef, setCustomRef] = useState(null);
+  const [customRef, setCustomRef] = useState<NeutralReferenceData | null>(null);
 
   const [alpha, setAlpha] = useState(DEFAULT_ALPHA);
   const [fieldMode, setFieldMode] = useState("0");
   const [u0Scaled, setU0Scaled] = useState(DEFAULT_U0_MM);
-  const [samples, setSamples] = useState([]);
+  const [samples, setSamples] = useState<TelemetrySample[]>([]);
 
   const alphaRef = useRef(alpha);
   const airfoilNameRef = useRef(airfoil.name);
@@ -909,14 +953,14 @@ export default function App() {
   airfoilNameRef.current = airfoil.name;
   fieldModeRef.current = fieldMode;
 
-  const appendSample = useCallback((nextStats) => {
+  const appendSample = useCallback((nextStats: TunnelStats) => {
     if (nextStats.cl === null || nextStats.cd === null) return;
     sampleIdRef.current += 1;
     const sep = nextStats.separationPct;
     const stateLabel = sep < 5 ? "Attached" : sep < 25 ? "Sep" : "Stall";
     const fieldLabel = FIELD_MODES.find(([v]) => v === fieldModeRef.current)?.[1] || "Velocity";
     const ld = nextStats.cd > 0.001 ? nextStats.cl / nextStats.cd : null;
-    const row = {
+    const row: TelemetrySample = {
       id: sampleIdRef.current,
       airfoil: airfoilNameRef.current,
       alpha: alphaRef.current,
@@ -932,7 +976,6 @@ export default function App() {
     setSamples((prev) => (prev.length >= 180 ? [...prev.slice(-179), row] : [...prev, row]));
   }, []);
 
-  // Load exact bundled NACA 0012 coordinates once on initial mount
   useEffect(() => {
     let alive = true;
     loadExample("naca0012.dat")
@@ -955,7 +998,7 @@ export default function App() {
     };
   }, []);
 
-  const handleSelectAirfoil = useCallback((next) => {
+  const handleSelectAirfoil = useCallback((next: AirfoilSelection) => {
     userSelectedAirfoilRef.current = true;
     setAirfoil(next);
     setActiveCoords(next.coords);
@@ -963,13 +1006,14 @@ export default function App() {
   }, []);
 
   const handleApplyRun = useCallback(
-    async (run) => {
+    async (run: BenchmarkRunDoc) => {
       const clampedAlpha = Math.max(-20, Math.min(25, Number(run.alpha) || DEFAULT_ALPHA));
       setAlpha(clampedAlpha);
       tunnelRef.current?.setAlpha(clampedAlpha);
 
       if (Number.isFinite(run.reynolds) && run.reynolds > 0) {
-        const targetU0 = (run.reynolds * LBM.NU) / LBM.CHORD_L;
+        const lbmConstants = LBM as typeof LBM & { NU: number; CHORD_L: number };
+        const targetU0 = (run.reynolds * lbmConstants.NU) / lbmConstants.CHORD_L;
         const scaled = Math.max(30, Math.min(100, Math.round(targetU0 * 1000)));
         setU0Scaled(scaled);
         tunnelRef.current?.setU0(scaled / 1000);
@@ -1073,6 +1117,7 @@ export default function App() {
             onSignUpWithEmail={signUpWithEmail}
             onSignInWithGoogle={signInWithGoogle}
             onSignOut={signOut}
+            onUpdateProfile={updateProfile}
             sharedAirfoils={sharedAirfoils}
             benchmarks={benchmarks}
             onLoadAirfoil={(loaded) => {

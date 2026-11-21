@@ -12,10 +12,14 @@ import type { User as SupabaseAuthUser } from "@supabase/supabase-js";
 import { supabase } from "../utils/supabase.ts";
 import {
   ensureUserProfile,
+  getLocalAvatar,
+  getLocalPilotDetails,
   subscribePublicAirfoils,
   subscribePublicBenchmarks,
   subscribeUserProfile,
+  updatePilotProfile,
   type BenchmarkRunDoc,
+  type PilotDetails,
   type SharedAirfoilDoc,
   type UserProfileDoc,
 } from "../lib/airfoilRepository.ts";
@@ -25,23 +29,48 @@ export interface AppUser {
   email: string;
   displayName: string;
   photoURL: string;
+  bio: string;
+  role: string;
+  organization: string;
+  location: string;
   emailVerified: boolean;
 }
 
 function toAppUser(u: SupabaseAuthUser | null): AppUser | null {
   if (!u) return null;
   const meta = u.user_metadata || {};
+  const localDetails = getLocalPilotDetails(u.id);
+  const localAvatar = getLocalAvatar(u.id);
+  const avatarRemoved = meta.avatar_removed === true;
   const displayName = String(
-    meta.full_name || meta.name || u.email?.split("@")[0] || "AeroLab Pilot"
+    meta.full_name || meta.name || localDetails.displayName || u.email?.split("@")[0] || "AeroLab Pilot"
   );
-  const photoURL = String(meta.avatar_url || meta.picture || "");
+  const photoURL = localAvatar
+    ? localAvatar
+    : avatarRemoved
+      ? ""
+      : String(meta.avatar_url || meta.picture || "");
   return {
     uid: u.id,
     email: u.email || "",
     displayName,
     photoURL,
+    bio: String(meta.bio ?? localDetails.bio ?? ""),
+    role: String(meta.role ?? localDetails.role ?? ""),
+    organization: String(meta.organization ?? localDetails.organization ?? ""),
+    location: String(meta.location ?? localDetails.location ?? ""),
     emailVerified: Boolean(u.email_confirmed_at || u.confirmed_at || u.email),
   };
+}
+
+export interface UpdateProfilePayload {
+  displayName: string;
+  bio: string;
+  role: string;
+  organization: string;
+  location: string;
+  avatarFile?: File | null;
+  removeAvatar?: boolean;
 }
 
 interface SupabaseContextValue {
@@ -58,6 +87,7 @@ interface SupabaseContextValue {
   signUpWithEmail: (email: string, password: string, displayName?: string) => Promise<void>;
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
+  updateProfile: (payload: UpdateProfilePayload) => Promise<PilotDetails>;
 }
 
 const SupabaseContext = createContext<SupabaseContextValue | null>(null);
@@ -287,6 +317,33 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const updateProfile = useCallback(async (payload: UpdateProfilePayload): Promise<PilotDetails> => {
+    const saved = await updatePilotProfile(payload);
+    setUser((prev) =>
+      prev
+        ? {
+            ...prev,
+            displayName: saved.displayName,
+            bio: saved.bio,
+            role: saved.role,
+            organization: saved.organization,
+            location: saved.location,
+            photoURL: saved.photoURL,
+          }
+        : prev
+    );
+    setUserProfile((prev) =>
+      prev
+        ? {
+            ...prev,
+            displayName: saved.displayName,
+            photoURL: saved.photoURL.startsWith("data:") ? prev.photoURL : saved.photoURL,
+          }
+        : prev
+    );
+    return saved;
+  }, []);
+
   return (
     <SupabaseContext.Provider
       value={{
@@ -303,6 +360,7 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
         signUpWithEmail,
         signInWithGoogle,
         signOut: handleSignOut,
+        updateProfile,
       }}
     >
       {children}

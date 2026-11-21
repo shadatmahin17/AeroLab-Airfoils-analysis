@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
-import { Cloud, CloudUpload, Download, Globe, Search, Trash2, Check } from "lucide-react";
-import { Alert, FileDrop, SelectField } from "./ui.jsx";
+import { Check, Cloud, CloudUpload, Download, Globe, Search, Trash2 } from "lucide-react";
+import { Alert, FileDrop, SelectField } from "./ui.tsx";
+import type { AppUser } from "./SupabaseProvider.tsx";
+import type { AirfoilSelection, Coord2D } from "../types.ts";
 import { downloadText, EXAMPLE_AIRFOILS, loadExample, readFileText } from "../lib/files.js";
 import { parseDatText } from "../lib/airfoilParser.js";
 import {
@@ -8,10 +10,25 @@ import {
   deleteSharedAirfoil,
   ensureUserProfile,
   uploadSharedAirfoil,
+  type NeutralReferenceData,
+  type SharedAirfoilDoc,
 } from "../lib/airfoilRepository.ts";
 import { runNeuroFoilPrediction } from "../lib/neurofoil.ts";
 
 const MAX_BYTES = 1024 * 1024;
+
+interface AirfoilPickerProps {
+  choice: string;
+  onChoiceChange: (nextChoice: string) => void;
+  uploadedFile: string | null;
+  onSelectAirfoil: (airfoil: AirfoilSelection) => void;
+  sharedAirfoils?: SharedAirfoilDoc[];
+  sharedError?: string | null;
+  activeAirfoil: AirfoilSelection;
+  activeCoords: Coord2D[];
+  user?: AppUser | null;
+  onUseAsNeutralRef?: (refData: NeutralReferenceData) => void;
+}
 
 export default function AirfoilPicker({
   choice,
@@ -24,19 +41,19 @@ export default function AirfoilPicker({
   activeCoords,
   user = null,
   onUseAsNeutralRef,
-}) {
-  const [err, setErr] = useState(null);
+}: AirfoilPickerProps) {
+  const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [sharing, setSharing] = useState(false);
-  const [shareMsg, setShareMsg] = useState(null);
+  const [shareMsg, setShareMsg] = useState<string | null>(null);
   const [uploaderName, setUploaderName] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [shareOnDrop, setShareOnDrop] = useState(true);
 
-  const options = useMemo(
+  const options = useMemo<Array<[string, string]>>(
     () => [
-      ...EXAMPLE_AIRFOILS.map(([n, f]) => [f, n]),
-      ...sharedAirfoils.map((a) => [`cloud:${a.id}`, `${a.name} (Community)`]),
+      ...EXAMPLE_AIRFOILS.map(([n, f]): [string, string] => [f, n]),
+      ...sharedAirfoils.map((a): [string, string] => [`cloud:${a.id}`, `${a.name} (Community)`]),
       ["upload", "Upload custom (.dat / .txt)"],
     ],
     [sharedAirfoils]
@@ -53,7 +70,7 @@ export default function AirfoilPicker({
     );
   }, [sharedAirfoils, searchTerm]);
 
-  const loadSharedDoc = (docItem) => {
+  const loadSharedDoc = (docItem: SharedAirfoilDoc) => {
     setErr(null);
     setShareMsg(null);
     try {
@@ -70,11 +87,11 @@ export default function AirfoilPicker({
         uploaderName: docItem.uploaderName,
       });
     } catch (e) {
-      setErr(e.message);
+      setErr(e instanceof Error ? e.message : "Could not parse airfoil.");
     }
   };
 
-  const handleChoice = async (nextChoice) => {
+  const handleChoice = async (nextChoice: string) => {
     onChoiceChange(nextChoice);
     setErr(null);
     setShareMsg(null);
@@ -100,13 +117,13 @@ export default function AirfoilPicker({
         isShared: false,
       });
     } catch (e) {
-      setErr(e.message);
+      setErr(e instanceof Error ? e.message : "Could not load airfoil.");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleFiles = async (files) => {
+  const handleFiles = async (files: File[]) => {
     setErr(null);
     setShareMsg(null);
     if (!files.length) return;
@@ -120,7 +137,7 @@ export default function AirfoilPicker({
       return;
     }
     try {
-      const content = await readFileText(f);
+      const content = (await readFileText(f)) as string;
       const { coords, fixes } = parseDatText(content);
       const foilName = f.name.replace(/\.(dat|txt)$/i, "");
       onSelectAirfoil({
@@ -159,13 +176,13 @@ export default function AirfoilPicker({
           }
           setShareMsg(`Published "${uploaded.name}" to Community Library.`);
         } catch (uploadErr) {
-          setErr(uploadErr?.message || "Failed to publish airfoil to Supabase.");
+          setErr(uploadErr instanceof Error ? uploadErr.message : "Failed to publish airfoil to Supabase.");
         } finally {
           setSharing(false);
         }
       }
     } catch (e) {
-      setErr(e.message);
+      setErr(e instanceof Error ? e.message : "Failed to read airfoil file.");
     }
   };
 
@@ -189,21 +206,21 @@ export default function AirfoilPicker({
       }
       setShareMsg(`Published "${uploaded.name}" so anyone can access it.`);
     } catch (e) {
-      setErr(e?.message || "Could not share airfoil.");
+      setErr(e instanceof Error ? e.message : "Could not share airfoil.");
     } finally {
       setSharing(false);
     }
   };
 
-  const handleDelete = async (item) => {
+  const handleDelete = async (item: SharedAirfoilDoc) => {
     setErr(null);
     try {
       await deleteSharedAirfoil(item.id);
       if (choice === `cloud:${item.id}`) {
-        handleChoice("naca0012.dat");
+        void handleChoice("naca0012.dat");
       }
     } catch (e) {
-      setErr(e?.message || "Could not delete airfoil.");
+      setErr(e instanceof Error ? e.message : "Could not delete airfoil.");
     }
   };
 
@@ -236,7 +253,6 @@ export default function AirfoilPicker({
         </div>
       )}
 
-      {/* Share Active Airfoil to Public Library */}
       <div className="flex flex-col gap-2 pt-2.5 border-t border-[var(--border)]">
         <div className="text-[11px] font-bold text-[#5C6670]">
           Publish Active Geometry
@@ -273,7 +289,6 @@ export default function AirfoilPicker({
       )}
       {(err || sharedError) && <Alert kind="error">{err || sharedError}</Alert>}
 
-      {/* Public Community Airfoils Browser */}
       <div className="flex flex-col gap-2 pt-2.5 border-t border-[var(--border)]">
         <div className="flex items-center justify-between gap-2">
           <span className="inline-flex items-center gap-1.5 text-[11.5px] font-bold text-[#161A1D]">

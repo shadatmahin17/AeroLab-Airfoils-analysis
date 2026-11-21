@@ -1,7 +1,13 @@
-import { useId, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, FileText, FolderUp, Info, XCircle } from "lucide-react";
+import { useId, useRef, useState, type ReactNode } from "react";
+import { AlertTriangle, CheckCircle2, FileCode2, FolderUp, Info, XCircle } from "lucide-react";
 
-export function Label({ children, htmlFor, help }) {
+interface LabelProps {
+  children: ReactNode;
+  htmlFor?: string;
+  help?: string;
+}
+
+export function Label({ children, htmlFor, help }: LabelProps) {
   return (
     <label className="field-label" htmlFor={htmlFor}>
       {children}
@@ -10,7 +16,7 @@ export function Label({ children, htmlFor, help }) {
   );
 }
 
-export function InfoTip({ text }) {
+export function InfoTip({ text }: { text: string }) {
   return (
     <span className="infotip" tabIndex={0} aria-label={text}>
       <span aria-hidden="true">i</span>
@@ -19,7 +25,29 @@ export function InfoTip({ text }) {
   );
 }
 
-export function SliderField({ label, help, value, onChange, min, max, step, format = (v) => v, disabled }) {
+interface SliderFieldProps {
+  label?: string;
+  help?: string;
+  value: number;
+  onChange: (value: number) => void;
+  min: number;
+  max: number;
+  step: number;
+  format?: (value: number) => string | number;
+  disabled?: boolean;
+}
+
+export function SliderField({
+  label,
+  help,
+  value,
+  onChange,
+  min,
+  max,
+  step,
+  format = (v) => v,
+  disabled,
+}: SliderFieldProps) {
   const id = useId();
   return (
     <div className="field">
@@ -42,7 +70,15 @@ export function SliderField({ label, help, value, onChange, min, max, step, form
   );
 }
 
-export function SelectField({ label, help, value, onChange, options }) {
+interface SelectFieldProps {
+  label?: string;
+  help?: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: Array<[string, string]>;
+}
+
+export function SelectField({ label, help, value, onChange, options }: SelectFieldProps) {
   const id = useId();
   return (
     <div className="field">
@@ -56,7 +92,7 @@ export function SelectField({ label, help, value, onChange, options }) {
   );
 }
 
-export function Alert({ kind = "info", children }) {
+export function Alert({ kind = "info", children }: { kind?: "info" | "warn" | "error"; children: ReactNode }) {
   const Icon = kind === "error" ? XCircle : kind === "warn" ? AlertTriangle : Info;
   return (
     <div className={`alert alert-${kind}`}>
@@ -66,10 +102,26 @@ export function Alert({ kind = "info", children }) {
   );
 }
 
-export function FileDrop({ accept = ".dat,.txt", multiple = false, files = [], onFiles, label, hint }) {
-  const input = useRef(null);
+interface FileDropProps {
+  accept?: string;
+  multiple?: boolean;
+  files?: Array<{ name: string }>;
+  onFiles: (files: File[]) => void;
+  label?: string;
+  hint?: string;
+}
+
+export function FileDrop({
+  accept = ".dat,.txt",
+  multiple = false,
+  files = [],
+  onFiles,
+  label,
+  hint,
+}: FileDropProps) {
+  const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
-  const pick = (list) => {
+  const pick = (list: FileList | null) => {
     const arr = Array.from(list || []);
     if (arr.length) onFiles(multiple ? arr : arr.slice(0, 1));
   };
@@ -94,13 +146,15 @@ export function FileDrop({ accept = ".dat,.txt", multiple = false, files = [], o
           <div style={{ color: "var(--text)", fontSize: 13.5 }}>{label || "Drop file here"}</div>
           <div className="drop-hint">{hint || `${accept.replaceAll(",", " ")} · max 1 MB`}</div>
         </div>
-        <button type="button" className="btn btn-secondary btn-sm" onClick={() => input.current?.click()}>Browse</button>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={() => input.current?.click()}>
+          Browse
+        </button>
       </div>
       {files.length > 0 && (
         <div className="drop-files mono">
           {files.map((f) => (
             <span key={f.name} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-              <FileText size={13} aria-hidden="true" style={{ color: "var(--accent)" }} />
+              <FileCode2 size={13} aria-hidden="true" style={{ color: "var(--accent)" }} />
               <span>{f.name}</span>
             </span>
           ))}
@@ -110,7 +164,7 @@ export function FileDrop({ accept = ".dat,.txt", multiple = false, files = [], o
   );
 }
 
-export function ParserBox({ filename, fixes }) {
+export function ParserBox({ filename, fixes }: { filename: string; fixes: string[] }) {
   const clean = !fixes?.length || (fixes.length === 1 && /No changes made/.test(fixes[0]));
   return (
     <div className="parser-box mono">

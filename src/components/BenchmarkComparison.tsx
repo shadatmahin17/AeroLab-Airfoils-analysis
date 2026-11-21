@@ -1,5 +1,7 @@
-import { useRef, useState } from "react";
-import { CheckCircle2, Cpu, FileUp, RotateCcw, Sparkles, Trash2, UploadCloud } from "lucide-react";
+import { useRef, useState, type ChangeEvent } from "react";
+import { CheckCircle2, Compass, FileUp, Radar, RotateCcw, Trash2, UploadCloud } from "lucide-react";
+import type { AppUser } from "./SupabaseProvider.tsx";
+import type { AirfoilSelection, TunnelStats } from "../types.ts";
 import {
   DEFAULT_NEUTRAL_BASELINE,
   deleteBenchmarkRun,
@@ -7,14 +9,28 @@ import {
   interpolateReferenceAtAlpha,
   parseNeutralComparisonFile,
   publishBenchmarkRun,
+  type BenchmarkRunDoc,
+  type NeutralReferenceData,
 } from "../lib/airfoilRepository.ts";
-import { evaluateLiveAgainstNeuroFoil } from "../lib/neurofoil.ts";
+import { evaluateLiveAgainstNeuroFoil, type NeuroFoilPrediction } from "../lib/neurofoil.ts";
 import { readFileText } from "../lib/files.js";
 
-function fmtDelta(val, digits = 2) {
+function fmtDelta(val: number | null | undefined, digits = 2): string {
   if (val === null || val === undefined || !Number.isFinite(val)) return "—";
   const sign = val >= 0 ? "+" : "";
   return `${sign}${val.toFixed(digits)}`;
+}
+
+interface BenchmarkComparisonProps {
+  stats: TunnelStats;
+  alpha: number;
+  airfoil: AirfoilSelection;
+  benchmarks?: BenchmarkRunDoc[];
+  neurofoilPrediction: NeuroFoilPrediction;
+  customRef?: NeutralReferenceData | null;
+  onCustomRefChange: (nextRef: NeutralReferenceData | null) => void;
+  onJumpToAlpha?: (alphaDeg: number) => void;
+  user?: AppUser | null;
 }
 
 export default function BenchmarkComparison({
@@ -27,25 +43,22 @@ export default function BenchmarkComparison({
   onCustomRefChange,
   onJumpToAlpha,
   user = null,
-}) {
-  const fileInputRef = useRef(null);
+}: BenchmarkComparisonProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
-  const [statusMsg, setStatusMsg] = useState(null);
-  const [errMsg, setErrMsg] = useState(null);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [errMsg, setErrMsg] = useState<string | null>(null);
 
   const liveCl = stats.cl;
   const liveCd = stats.cd;
   const liveLd = liveCl !== null && liveCd !== null && liveCd > 0.001 ? liveCl / liveCd : null;
 
-  // Global best recorded L/D result in Supabase
   const bestRun = benchmarks.length > 0 ? benchmarks[0] : null;
   const foilBestRun =
     benchmarks.find((b) => b.airfoilName.toLowerCase() === airfoil.name.toLowerCase()) || null;
 
-  // NeuroFoil live surrogate evaluation at current alpha & Re
   const neuroEval = evaluateLiveAgainstNeuroFoil(neurofoilPrediction, alpha, liveCl, liveCd);
 
-  // Active comparison reference: custom uploaded file OR live NeuroFoil surrogate
   const activeRef = customRef || neurofoilPrediction.asReference;
   const refAtAlpha = customRef
     ? interpolateReferenceAtAlpha(customRef, alpha)
@@ -92,43 +105,42 @@ export default function BenchmarkComparison({
       }
       setStatusMsg(`Saved ${saved.airfoilName} (L/D ${saved.ld.toFixed(2)}) to Best Benchmarks.`);
     } catch (e) {
-      setErrMsg(e?.message || "Could not publish benchmark.");
+      setErrMsg(e instanceof Error ? e.message : "Could not publish benchmark.");
     } finally {
       setSaving(false);
     }
   };
 
-  const handleReferenceFile = async (e) => {
+  const handleReferenceFile = async (e: ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     e.target.value = "";
     if (!f) return;
     setErrMsg(null);
     setStatusMsg(null);
     try {
-      const txt = await readFileText(f);
+      const txt = (await readFileText(f)) as string;
       const parsed = parseNeutralComparisonFile(txt, f.name);
       onCustomRefChange(parsed);
       setStatusMsg(`Loaded NeuroFoil/Ref file: ${parsed.label} (${parsed.rows.length} α pts).`);
     } catch (err) {
-      setErrMsg(err?.message || "Invalid reference/NeuroFoil file.");
+      setErrMsg(err instanceof Error ? err.message : "Invalid reference/NeuroFoil file.");
     }
   };
 
-  const handleDeleteBenchmark = async (id) => {
+  const handleDeleteBenchmark = async (id: string) => {
     setErrMsg(null);
     try {
       await deleteBenchmarkRun(id);
     } catch (e) {
-      setErrMsg(e?.message || "Could not delete benchmark.");
+      setErrMsg(e instanceof Error ? e.message : "Could not delete benchmark.");
     }
   };
 
   return (
     <div className="antigravity-glass rounded-xl p-3.5 flex flex-col gap-3 min-w-0">
-      {/* Header + Reference File Controls */}
       <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-[var(--border)]">
         <div className="flex items-center gap-1.5 text-xs font-bold text-[#161A1D]">
-          <Cpu size={14} className="text-[#1769AA]" aria-hidden="true" />
+          <Radar size={14} className="text-[#1769AA]" aria-hidden="true" />
           <span>NeuroFoil &amp; Best</span>
         </div>
 
@@ -180,11 +192,10 @@ export default function BenchmarkComparison({
         </div>
       </div>
 
-      {/* NeuroFoil Surrogate Telemetry & 1-Click Optimal AoA Jump */}
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between gap-2 text-[11.5px]">
           <div className="flex items-center gap-1.5 min-w-0 font-semibold text-[#161A1D]">
-            <Sparkles size={13} className="text-[#1769AA] shrink-0" aria-hidden="true" />
+            <Compass size={13} className="text-[#1769AA] shrink-0" aria-hidden="true" />
             <span className="truncate">{neuroEval.regime}</span>
           </div>
           <span className="font-mono tabular-nums font-semibold text-[#1769AA] shrink-0">
@@ -227,7 +238,6 @@ export default function BenchmarkComparison({
         </div>
       </div>
 
-      {/* Live vs NeuroFoil/Ref vs Best Table */}
       <div className="rounded-lg border border-[var(--border)] overflow-hidden">
         <table className="w-full border-collapse text-[11.5px] font-mono tabular-nums">
           <thead className="bg-[var(--bg)] border-b border-[var(--border)] text-[#5C6670]">
@@ -281,7 +291,6 @@ export default function BenchmarkComparison({
         </table>
       </div>
 
-      {/* Inline Residual & Best Progress Summary */}
       <div className="flex flex-col gap-1.5 text-[11px] font-mono tabular-nums pt-1 border-t border-[var(--border)]">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[#5C6670] truncate" title={activeRef.label}>
@@ -322,7 +331,6 @@ export default function BenchmarkComparison({
         )}
       </div>
 
-      {/* Save Current Simulation to Best Benchmarks Leaderboard */}
       <button
         type="button"
         onClick={handleSaveBestRun}
@@ -345,7 +353,6 @@ export default function BenchmarkComparison({
         </div>
       )}
 
-      {/* Top Recorded Results Leaderboard */}
       {benchmarks.length > 0 && (
         <div className="flex flex-col gap-1.5 pt-2 border-t border-[var(--border)]">
           <div className="text-[11px] font-bold text-[#5C6670]">

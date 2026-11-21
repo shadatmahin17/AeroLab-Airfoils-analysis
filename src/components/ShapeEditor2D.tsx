@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { Download, RotateCcw } from "lucide-react";
+import type { Coord2D } from "../types.ts";
 import { BZ } from "../lib/lbm/bezierShape.js";
 import { downloadText } from "../lib/files.js";
 
@@ -10,40 +11,75 @@ const SC = 280;
 const X0 = 30;
 const Y0 = 80;
 
-const toPx = (x, y) => [X0 + x * SC, Y0 - y * SC];
-const toW = (px, py) => [(px - X0) / SC, (Y0 - py) / SC];
-const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
-const cloneShape = (s) => ({
+const toPx = (x: number, y: number): [number, number] => [X0 + x * SC, Y0 - y * SC];
+const toW = (px: number, py: number): [number, number] => [(px - X0) / SC, (Y0 - py) / SC];
+const clamp = (v: number, a: number, b: number): number => Math.min(b, Math.max(a, v));
+
+interface BezierShape {
+  camber: Coord2D[];
+  thick: Coord2D[];
+}
+
+interface HandlePoint {
+  kind: "c" | "t";
+  i: number;
+  side?: number;
+  x: number;
+  y: number;
+}
+
+const cloneShape = (s: BezierShape): BezierShape => ({
   camber: s.camber.map((p) => p.slice()),
   thick: s.thick.map((p) => p.slice()),
 });
+
+interface ShapeEditor2DProps {
+  sourceCoords: Coord2D[];
+  foilName: string;
+  onCoordsChange: (coords: Coord2D[]) => void;
+  onResetSource: () => void;
+}
 
 export default function ShapeEditor2D({
   sourceCoords,
   foilName,
   onCoordsChange,
   onResetSource,
-}) {
-  const canvasRef = useRef(null);
-  const fittedRef = useRef(null);
-  const shapeRef = useRef(null);
-  const dragRef = useRef(null);
-  const timerRef = useRef(null);
+}: ShapeEditor2DProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fittedRef = useRef<BezierShape | null>(null);
+  const shapeRef = useRef<BezierShape | null>(null);
+  const dragRef = useRef<HandlePoint | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const [fitErr, setFitErr] = useState(0);
   const [edited, setEdited] = useState(false);
   const [metrics, setMetrics] = useState({ camber: 0, camberX: 0.4, thick: 0.12, thickX: 0.3 });
+
+  function getHandles(shape: BezierShape): HandlePoint[] {
+    const out: HandlePoint[] = [];
+    shape.camber.forEach((p, i) => {
+      if (i === 1 || i === 2) out.push({ kind: "c", i, x: p[0], y: p[1] });
+    });
+    shape.thick.forEach((p, i) => {
+      if (i < 1 || i > 3) return;
+      const yc = BZ.yAt(shape.camber, Math.max(p[0], 1e-6));
+      out.push({ kind: "t", i, side: 1, x: p[0], y: yc + p[1] / 2 });
+      out.push({ kind: "t", i, side: -1, x: p[0], y: yc - p[1] / 2 });
+    });
+    return out;
+  }
 
   const draw = () => {
     const cv = canvasRef.current;
     const shape = shapeRef.current;
     if (!cv || !shape) return;
     const cx = cv.getContext("2d");
+    if (!cx) return;
     cx.setTransform(DPR, 0, 0, DPR, 0, 0);
     cx.fillStyle = "#F7F9FA";
     cx.fillRect(0, 0, W, H);
 
-    // Chord line and x/c ticks
     cx.strokeStyle = "#D9DEE2";
     cx.lineWidth = 1;
     cx.beginPath();
@@ -58,7 +94,6 @@ export default function ShapeEditor2D({
       cx.fillText(t.toFixed(2), toPx(t, 0)[0], H - 6);
     }
 
-    // Airfoil silhouette
     const pts = BZ.coords(shape, 121);
     cx.beginPath();
     pts.forEach((p, i) => {
@@ -73,7 +108,6 @@ export default function ShapeEditor2D({
     cx.lineWidth = 1.5;
     cx.stroke();
 
-    // Camber line + control polygon
     cx.setLineDash([4, 3]);
     cx.strokeStyle = "#D97706";
     cx.lineWidth = 1.3;
@@ -97,7 +131,6 @@ export default function ShapeEditor2D({
     cx.stroke();
     cx.setLineDash([]);
 
-    // Handles
     const drag = dragRef.current;
     const handles = getHandles(shape);
     for (const h of handles) {
@@ -116,7 +149,7 @@ export default function ShapeEditor2D({
         drag && drag.kind === h.kind && drag.i === h.i && (h.kind === "c" || drag.side === h.side);
       cx.beginPath();
       cx.arc(a, b, active ? 6.5 : 5.2, 0, 2 * Math.PI);
-      if (h.kind === "t" && h.side < 0) {
+      if (h.kind === "t" && (h.side ?? 1) < 0) {
         cx.fillStyle = "#FFFFFF";
         cx.fill();
         cx.strokeStyle = col;
@@ -132,21 +165,6 @@ export default function ShapeEditor2D({
     }
   };
 
-  function getHandles(shape) {
-    const out = [];
-    shape.camber.forEach((p, i) => {
-      if (i === 1 || i === 2) out.push({ kind: "c", i, x: p[0], y: p[1] });
-    });
-    shape.thick.forEach((p, i) => {
-      if (i < 1 || i > 3) return;
-      const yc = BZ.yAt(shape.camber, Math.max(p[0], 1e-6));
-      out.push({ kind: "t", i, side: 1, x: p[0], y: yc + p[1] / 2 });
-      out.push({ kind: "t", i, side: -1, x: p[0], y: yc - p[1] / 2 });
-    });
-    return out;
-  }
-
-  // Re-fit whenever user selects or uploads a new airfoil
   useEffect(() => {
     if (!sourceCoords || sourceCoords.length < 3) return;
     const { shape, err } = BZ.fit(sourceCoords);
@@ -160,7 +178,7 @@ export default function ShapeEditor2D({
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
-  const pushCoords = (immediate) => {
+  const pushCoords = (immediate: boolean) => {
     clearTimeout(timerRef.current);
     const commit = () => {
       if (!shapeRef.current) return;
@@ -170,16 +188,17 @@ export default function ShapeEditor2D({
     else timerRef.current = setTimeout(commit, 65);
   };
 
-  const pointerPos = (e) => {
-    const r = canvasRef.current.getBoundingClientRect();
+  const pointerPos = (e: PointerEvent<HTMLCanvasElement>): [number, number] => {
+    const r = canvasRef.current!.getBoundingClientRect();
     return [(e.clientX - r.left) * (W / r.width), (e.clientY - r.top) * (H / r.height)];
   };
 
-  const onPointerDown = (e) => {
+  const onPointerDown = (e: PointerEvent<HTMLCanvasElement>) => {
     const shape = shapeRef.current;
-    if (!shape) return;
+    const cv = canvasRef.current;
+    if (!shape || !cv) return;
     const [px, py] = pointerPos(e);
-    let best = null;
+    let best: HandlePoint | null = null;
     let bd = 16;
     for (const h of getHandles(shape)) {
       const [a, b] = toPx(h.x, h.y);
@@ -191,15 +210,16 @@ export default function ShapeEditor2D({
     }
     if (!best) return;
     dragRef.current = best;
-    canvasRef.current.setPointerCapture(e.pointerId);
-    canvasRef.current.style.cursor = "grabbing";
+    cv.setPointerCapture(e.pointerId);
+    cv.style.cursor = "grabbing";
     e.preventDefault();
     draw();
   };
 
-  const onPointerMove = (e) => {
+  const onPointerMove = (e: PointerEvent<HTMLCanvasElement>) => {
     const shape = shapeRef.current;
-    if (!shape) return;
+    const cv = canvasRef.current;
+    if (!shape || !cv) return;
     const [px, py] = pointerPos(e);
     const [x, y] = toW(px, py);
     const drag = dragRef.current;
@@ -208,7 +228,7 @@ export default function ShapeEditor2D({
         const [a, b] = toPx(h.x, h.y);
         return Math.hypot(a - px, b - py) < 16;
       });
-      canvasRef.current.style.cursor = near ? "grab" : "default";
+      cv.style.cursor = near ? "grab" : "default";
       return;
     }
     if (drag.kind === "c") {
@@ -221,14 +241,15 @@ export default function ShapeEditor2D({
     } else {
       const T = shape.thick;
       const i = drag.i;
+      const side = drag.side ?? 1;
       if (i === 1) {
-        T[1][1] = clamp(drag.side * 2 * y, 0.005, 0.3);
+        T[1][1] = clamp(side * 2 * y, 0.005, 0.3);
       } else {
         const xmin = i === 2 ? 0.02 : T[2][0] + 0.05;
         const xmax = i === 2 ? T[3][0] - 0.05 : 0.98;
         T[i][0] = clamp(x, xmin, xmax);
         const yc = BZ.yAt(shape.camber, T[i][0]);
-        T[i][1] = clamp(drag.side * 2 * (y - yc), 0, 0.3);
+        T[i][1] = clamp(side * 2 * (y - yc), 0, 0.3);
       }
     }
     setEdited(true);

@@ -1,13 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Plotly from "plotly.js-basic-dist-min";
-import { Download, FileJson, FileSpreadsheet, LineChart, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { Download, FileJson, FileSpreadsheet, Plus, RotateCcw, Trash2, TrendingUp } from "lucide-react";
 import { downloadBlob, downloadText, stem, toCsv } from "../lib/files.js";
+import type { BenchmarkRunDoc, NeutralReferenceData } from "../lib/airfoilRepository.ts";
+import type { TelemetrySample } from "../types.ts";
 
 const PLOT_FONT_MONO = "'JetBrains Mono', ui-monospace, monospace";
 const PLOT_FONT_SANS = "'Quicksand', ui-sans-serif, system-ui, sans-serif";
 
-function buildPolarPoints(samples) {
-  const buckets = new Map();
+type ChartMode = "history" | "polar" | "ld";
+
+interface PolarPoint {
+  alpha: number;
+  cl: number;
+  cd: number;
+  ld: number;
+  sep: number;
+  count: number;
+}
+
+function buildPolarPoints(samples: TelemetrySample[]): PolarPoint[] {
+  const buckets = new Map<
+    string,
+    { alpha: number; clSum: number; cdSum: number; ldSum: number; ldCount: number; sepSum: number; n: number }
+  >();
   for (const s of samples) {
     if (s.cl === null || s.cd === null) continue;
     const key = s.alpha.toFixed(1);
@@ -57,11 +73,18 @@ function buildPlotSpec({
   neutralRef = null,
   bestBenchmark = null,
   forExport = false,
+}: {
+  samples: TelemetrySample[];
+  mode: ChartMode;
+  airfoilName: string;
+  neutralRef?: NeutralReferenceData | null;
+  bestBenchmark?: BenchmarkRunDoc | null;
+  forExport?: boolean;
 }) {
   const valid = samples.filter((s) => s.cl !== null && s.cd !== null);
   const polarPts = mode === "history" ? [] : buildPolarPoints(valid);
 
-  let data = [];
+  let data: Array<Record<string, unknown>> = [];
   const isDualAxis = mode !== "ld";
 
   if (mode === "history") {
@@ -196,7 +219,7 @@ function buildPlotSpec({
   const modeTitle = mode === "history" ? "Telemetry History" : mode === "polar" ? "AoA Polar (CL / CD)" : "Efficiency Polar (L/D)";
   const hasData = mode === "history" ? valid.length > 0 : polarPts.length > 0;
 
-  const layout = {
+  const layout: Record<string, unknown> = {
     paper_bgcolor: "#FFFFFF",
     plot_bgcolor: "#FFFFFF",
     font: { family: PLOT_FONT_MONO, size: forExport ? 12 : 9.5, color: "#5C6670" },
@@ -287,6 +310,15 @@ function buildPlotSpec({
   return { data, layout };
 }
 
+interface ResultsAnalyticsProps {
+  samples: TelemetrySample[];
+  airfoilName: string;
+  neutralRef?: NeutralReferenceData | null;
+  bestBenchmark?: BenchmarkRunDoc | null;
+  onRecordSnapshot: () => void;
+  onClearSamples: () => void;
+}
+
 export default function ResultsAnalytics({
   samples,
   airfoilName,
@@ -294,9 +326,9 @@ export default function ResultsAnalytics({
   bestBenchmark = null,
   onRecordSnapshot,
   onClearSamples,
-}) {
-  const plotRef = useRef(null);
-  const [chartMode, setChartMode] = useState("history");
+}: ResultsAnalyticsProps) {
+  const plotRef = useRef<HTMLDivElement>(null);
+  const [chartMode, setChartMode] = useState<ChartMode>("history");
   const [revisionBump, setRevisionBump] = useState(0);
 
   const spec = useMemo(
@@ -312,7 +344,6 @@ export default function ResultsAnalytics({
     [samples, chartMode, airfoilName, neutralRef, bestBenchmark]
   );
 
-  // Render & reactively update Plotly chart without resetting zoom state
   useEffect(() => {
     const el = plotRef.current;
     if (!el) return;
@@ -320,14 +351,13 @@ export default function ResultsAnalytics({
       ...spec.layout,
       uirevision: `${chartMode}-${revisionBump}`,
     };
-    Plotly.react(el, spec.data, layout, {
+    void Plotly.react(el, spec.data, layout, {
       responsive: true,
       displayModeBar: false,
       scrollZoom: true,
     });
   }, [spec, chartMode, revisionBump]);
 
-  // Keep Plotly sized accurately across sidebar toggles and screen rotations
   useEffect(() => {
     const el = plotRef.current;
     if (!el || typeof ResizeObserver === "undefined") {
@@ -348,7 +378,7 @@ export default function ResultsAnalytics({
   }, []);
 
   const handleExportImage = useCallback(
-    async (format) => {
+    async (format: "png" | "svg") => {
       if (!samples.length) return;
       const exportSpec = buildPlotSpec({
         samples,
@@ -411,11 +441,10 @@ export default function ResultsAnalytics({
 
   return (
     <div className="flex flex-col gap-3 min-w-0">
-      {/* Interactive Telemetry Graph Card (Plotly.js) */}
       <div className="antigravity-glass rounded-xl p-3.5 flex flex-col gap-2.5 min-w-0">
         <div className="flex items-center justify-between gap-2 pb-2 border-b border-[var(--border)]">
           <div className="flex items-center gap-1.5 text-xs font-bold text-[#161A1D]">
-            <LineChart size={14} className="text-[#1769AA]" aria-hidden="true" />
+            <TrendingUp size={14} className="text-[#1769AA]" aria-hidden="true" />
             <span>Telemetry Graph</span>
           </div>
 
@@ -451,13 +480,14 @@ export default function ResultsAnalytics({
           </div>
         </div>
 
-        {/* Mode Tabs */}
         <div className="grid grid-cols-3 p-0.5 rounded-lg bg-[var(--bg)] border border-[var(--border)] text-[11.5px] gap-0.5">
-          {[
-            ["history", "History"],
-            ["polar", "α Polar"],
-            ["ld", "L/D"],
-          ].map(([key, label]) => (
+          {(
+            [
+              ["history", "History"],
+              ["polar", "α Polar"],
+              ["ld", "L/D"],
+            ] as const
+          ).map(([key, label]) => (
             <button
               key={key}
               type="button"
@@ -490,7 +520,6 @@ export default function ResultsAnalytics({
         </div>
       </div>
 
-      {/* Data Sheet Card */}
       <div className="antigravity-glass rounded-xl p-3.5 flex flex-col gap-2.5 min-w-0">
         <div className="flex items-center justify-between gap-2 pb-2 border-b border-[var(--border)]">
           <div className="flex items-center gap-1.5 text-xs font-bold text-[#161A1D]">

@@ -14,6 +14,15 @@ export interface UserProfileDoc {
   updatedAtMs: number;
 }
 
+export interface PilotDetails {
+  displayName: string;
+  bio: string;
+  role: string;
+  organization: string;
+  location: string;
+  photoURL: string;
+}
+
 export interface SharedAirfoilDoc {
   id: string;
   name: string;
@@ -343,6 +352,221 @@ export async function ensureUserProfile(statsHint?: {
   }
 
   emitSync("profiles");
+}
+
+const LOCAL_AVATAR_KEY_PREFIX = "aerolab:avatar:";
+const LOCAL_DETAILS_KEY_PREFIX = "aerolab:pilot-details:";
+
+export function getLocalAvatar(uid: string): string {
+  if (typeof window === "undefined" || !uid) return "";
+  try {
+    return window.localStorage.getItem(`${LOCAL_AVATAR_KEY_PREFIX}${uid}`) || "";
+  } catch {
+    return "";
+  }
+}
+
+export function saveLocalAvatar(uid: string, dataUrl: string | null): void {
+  if (typeof window === "undefined" || !uid) return;
+  try {
+    const key = `${LOCAL_AVATAR_KEY_PREFIX}${uid}`;
+    if (dataUrl) {
+      window.localStorage.setItem(key, dataUrl);
+    } else {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // ignore storage quota failures
+  }
+}
+
+export function getLocalPilotDetails(uid: string): Partial<PilotDetails> {
+  if (typeof window === "undefined" || !uid) return {};
+  try {
+    const raw = window.localStorage.getItem(`${LOCAL_DETAILS_KEY_PREFIX}${uid}`);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Partial<PilotDetails>;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveLocalPilotDetails(uid: string, details: Partial<PilotDetails>): void {
+  if (typeof window === "undefined" || !uid) return;
+  try {
+    window.localStorage.setItem(`${LOCAL_DETAILS_KEY_PREFIX}${uid}`, JSON.stringify(details));
+  } catch {
+    // ignore storage failures
+  }
+}
+
+export async function processAvatarImage(file: File): Promise<{ dataUrl: string; blob: Blob }> {
+  if (!file.type.startsWith("image/")) {
+    throw new Error("Please select an image file (PNG, JPG, or WebP).");
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    throw new Error("Profile image must be 10 MB or smaller.");
+  }
+
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("Could not read the selected image."));
+      el.src = objectUrl;
+    });
+
+    const size = 256;
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Canvas image processing is unavailable in this browser.");
+    }
+
+    const srcMin = Math.min(img.naturalWidth || img.width, img.naturalHeight || img.height);
+    const sx = ((img.naturalWidth || img.width) - srcMin) / 2;
+    const sy = ((img.naturalHeight || img.height) - srcMin) / 2;
+    ctx.drawImage(img, sx, sy, srcMin, srcMin, 0, 0, size, size);
+
+    const mime = "image/jpeg";
+    const dataUrl = canvas.toDataURL(mime, 0.86);
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (b) => (b ? resolve(b) : reject(new Error("Could not encode avatar image."))),
+        mime,
+        0.86
+      );
+    });
+
+    return { dataUrl, blob };
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+export async function updatePilotProfile(input: {
+  displayName: string;
+  bio: string;
+  role: string;
+  organization: string;
+  location: string;
+  avatarFile?: File | null;
+  removeAvatar?: boolean;
+}): Promise<PilotDetails> {
+  const client = requireSupabase();
+  const {
+    data: { user },
+  } = await client.auth.getUser();
+  if (!user) {
+    throw new Error("Sign in to update your pilot profile.");
+  }
+
+  const cleanName = input.displayName.trim().slice(0, 80);
+  if (!cleanName) {
+    throw new Error("Display name cannot be empty.");
+  }
+  const cleanBio = input.bio.trim().slice(0, 280);
+  const cleanRole = input.role.trim().slice(0, 60);
+  const cleanOrganization = input.organization.trim().slice(0, 60);
+  const cleanLocation = input.location.trim().slice(0, 60);
+
+  let nextPhotoUrl: string | undefined;
+  let nextLocalPhoto: string | undefined;
+
+  if (input.removeAvatar) {
+    saveLocalAvatar(user.id, null);
+    nextPhotoUrl = "";
+    nextLocalPhoto = "";
+  } else if (input.avatarFile) {
+    const { dataUrl, blob } = await processAvatarImage(input.avatarFile);
+    nextLocalPhoto = dataUrl;
+    saveLocalAvatar(user.id, dataUrl);
+
+    try {
+      const objectPath = `${user.id}/avatar-${Date.now()}.jpg`;
+      const { error: uploadError } = await client.storage
+        .from("avatars")
+        .upload(objectPath, blob, { upsert: true, contentType: "image/jpeg" });
+      if (!uploadError) {
+        const { data: pub } = client.storage.from("avatars").getPublicUrl(objectPath);
+        if (pub?.publicUrl && pub.publicUrl.length <= 512) {
+          nextPhotoUrl = pub.publicUrl;
+        }
+      }
+    } catch {
+      // Storage bucket optional; local avatar persistence handles it cleanly.
+    }
+  }
+
+  await ensureUserProfile({ displayName: cleanName });
+
+  const profilePatch: Record<string, unknown> = {
+    display_name: cleanName,
+    updated_at: new Date().toISOString(),
+  };
+  if (nextPhotoUrl !== undefined) {
+    profilePatch.photo_url = nextPhotoUrl.slice(0, 512);
+  }
+
+  const { error } = await client
+    .from("user_profiles")
+    .update(profilePatch)
+    .eq("uid", user.id);
+
+  if (error) {
+    throw formatSupabaseError(error, "Could not update pilot profile.");
+  }
+
+  const metadataPatch: Record<string, unknown> = {
+    full_name: cleanName,
+    bio: cleanBio,
+    role: cleanRole,
+    organization: cleanOrganization,
+    location: cleanLocation,
+  };
+  if (input.removeAvatar) {
+    metadataPatch.avatar_url = "";
+    metadataPatch.avatar_removed = true;
+  } else if (input.avatarFile) {
+    metadataPatch.avatar_removed = false;
+    if (nextPhotoUrl !== undefined) {
+      metadataPatch.avatar_url = nextPhotoUrl;
+    }
+  }
+
+  const { error: authErr } = await client.auth.updateUser({ data: metadataPatch });
+  if (authErr) {
+    throw new Error(authErr.message || "Could not save profile metadata.");
+  }
+
+  const existingLocal = getLocalAvatar(user.id);
+  const resolvedPhotoURL =
+    nextPhotoUrl !== undefined
+      ? nextPhotoUrl || nextLocalPhoto || ""
+      : existingLocal || String(user.user_metadata?.avatar_url || user.user_metadata?.picture || "");
+
+  saveLocalPilotDetails(user.id, {
+    displayName: cleanName,
+    bio: cleanBio,
+    role: cleanRole,
+    organization: cleanOrganization,
+    location: cleanLocation,
+  });
+
+  emitSync("profiles");
+
+  return {
+    displayName: cleanName,
+    bio: cleanBio,
+    role: cleanRole,
+    organization: cleanOrganization,
+    location: cleanLocation,
+    photoURL: resolvedPhotoURL,
+  };
 }
 
 export async function updateUserDisplayName(nextName: string): Promise<string> {
